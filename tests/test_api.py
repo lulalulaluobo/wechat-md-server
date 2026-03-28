@@ -1,4 +1,5 @@
 import io
+import os
 import sys
 import tempfile
 import unittest
@@ -35,6 +36,41 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.json()["status"], "success")
         self.assertEqual(response.json()["result"]["title"], "示例")
 
+    def test_convert_defaults_to_fns_when_configured(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            markdown_path = Path(temp_dir) / "article.md"
+            markdown_path.write_text("# 示例\n\n正文", encoding="utf-8")
+            fake_result = {
+                "title": "示例",
+                "folder_name": "01_示例",
+                "markdown_file": str(markdown_path),
+            }
+            fake_sync = {
+                "status": "success",
+                "target": "fns",
+                "vault": "MainVault",
+                "path": "00_Inbox/微信公众号/示例.md",
+            }
+            env = {
+                "WECHAT_MD_FNS_BASE_URL": "https://fns.example.com",
+                "WECHAT_MD_FNS_TOKEN": "fns-token",
+                "WECHAT_MD_FNS_VAULT": "MainVault",
+            }
+            with patch.dict(os.environ, env, clear=False):
+                with patch("app.api.routes.run_pipeline", return_value=fake_result):
+                    with patch("app.api.routes.sync_result_to_output", return_value=fake_sync) as mocked_sync:
+                        response = self.client.post(
+                            "/api/convert",
+                            json={"url": "https://mp.weixin.qq.com/s/example"},
+                        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["status"], "success")
+        self.assertEqual(data["output_target"], "fns")
+        self.assertEqual(data["sync"]["path"], "00_Inbox/微信公众号/示例.md")
+        mocked_sync.assert_called_once()
+
     def test_batch_from_text(self):
         with patch("app.api.routes.job_store.create_batch_job") as mocked:
             mocked.return_value = {
@@ -65,6 +101,17 @@ class ApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["job_id"], "job-file")
+
+    def test_api_requires_access_token_when_configured(self):
+        with patch.dict(os.environ, {"WECHAT_MD_ACCESS_TOKEN": "secret-token"}, clear=False):
+            unauthorized = self.client.get("/api/config")
+            authorized = self.client.get(
+                "/api/config",
+                headers={"Authorization": "Bearer secret-token"},
+            )
+
+        self.assertEqual(unauthorized.status_code, 401)
+        self.assertEqual(authorized.status_code, 200)
 
 
 if __name__ == "__main__":

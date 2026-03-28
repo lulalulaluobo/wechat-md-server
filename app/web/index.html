@@ -70,6 +70,20 @@
       white-space: pre-wrap;
       word-break: break-word;
     }
+    .toolbar {
+      display: flex;
+      justify-content: flex-end;
+      margin-bottom: 14px;
+    }
+    .toolbar button {
+      width: auto;
+      border: 0;
+      border-radius: 999px;
+      padding: 10px 14px;
+      background: var(--accent-2);
+      color: #fff;
+      cursor: pointer;
+    }
     ul.jobs { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
     ul.jobs li {
       border: 1px solid var(--line);
@@ -82,8 +96,11 @@
 </head>
 <body>
   <main>
+    <div class="toolbar">
+      <button id="logout-button">退出登录</button>
+    </div>
     <h1>Wechat MD Server</h1>
-    <p class="lead">本地把微信公众号文章转成 Markdown，写入 Obsidian，并自动处理图片外链。</p>
+    <p class="lead">将微信公众号文章转成 Markdown，并按配置写入本地目录或 Fast Note Sync。</p>
     <div class="grid">
       <section class="card">
         <h2>单篇转换</h2>
@@ -91,6 +108,8 @@
         <input id="single-url" placeholder="https://mp.weixin.qq.com/s/..." />
         <label for="single-output">输出目录</label>
         <input id="single-output" placeholder="D:\obsidian\00_Inbox" />
+        <label for="single-target">输出目标</label>
+        <input id="single-target" placeholder="fns / local" />
         <div class="row">
           <div>
             <label for="single-timeout">超时秒数</label>
@@ -114,6 +133,8 @@
         <input id="batch-file" type="file" />
         <label for="batch-output">输出目录</label>
         <input id="batch-output" placeholder="D:\obsidian\00_Inbox" />
+        <label for="batch-target">输出目标</label>
+        <input id="batch-target" placeholder="fns / local" />
         <div class="row">
           <div>
             <label for="batch-timeout">超时秒数</label>
@@ -157,6 +178,8 @@
       configResult.textContent = JSON.stringify(data, null, 2);
       document.getElementById("single-output").value = data.default_output_dir || "";
       document.getElementById("batch-output").value = data.default_output_dir || "";
+      document.getElementById("single-target").value = data.default_output_target || "";
+      document.getElementById("batch-target").value = data.default_output_target || "";
     }
 
     document.getElementById("single-submit").addEventListener("click", async () => {
@@ -164,6 +187,7 @@
       const payload = {
         url: document.getElementById("single-url").value.trim(),
         output_dir: document.getElementById("single-output").value.trim(),
+        output_target: document.getElementById("single-target").value.trim(),
         timeout: Number(document.getElementById("single-timeout").value || 30),
         save_html: document.getElementById("single-save-html").checked
       };
@@ -195,6 +219,7 @@
       const formData = new FormData();
       formData.append("urls_text", document.getElementById("batch-urls").value);
       formData.append("output_dir", document.getElementById("batch-output").value.trim());
+      formData.append("output_target", document.getElementById("batch-target").value.trim());
       formData.append("timeout", document.getElementById("batch-timeout").value || "30");
       formData.append("save_html", document.getElementById("batch-save-html").checked ? "true" : "false");
       if (fileInput.files[0]) {
@@ -213,6 +238,11 @@
 
     loadConfig().catch((error) => {
       configResult.textContent = String(error);
+    });
+
+    document.getElementById("logout-button").addEventListener("click", async () => {
+      await fetch("/api/session", { method: "DELETE" });
+      window.location.href = "/";
     });
   </script>
 </body>

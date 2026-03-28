@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Wechat MD Server Login</title>
+  <style>
+    :root {
+      --bg: #efe8dc;
+      --card: #fffaf2;
+      --ink: #1f2430;
+      --muted: #676e7b;
+      --line: #d7c8b3;
+      --accent: #2d6a4f;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background:
+        radial-gradient(circle at top left, rgba(45,106,79,.16), transparent 26%),
+        radial-gradient(circle at bottom right, rgba(195,95,45,.12), transparent 24%),
+        var(--bg);
+      color: var(--ink);
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+    .panel {
+      width: min(460px, calc(100vw - 32px));
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      padding: 24px;
+      box-shadow: 0 24px 60px rgba(54, 45, 32, .12);
+    }
+    h1 { margin: 0 0 10px; font-size: 28px; }
+    p { margin: 0 0 18px; color: var(--muted); }
+    label { display: block; margin-bottom: 8px; font-size: 14px; }
+    input, button {
+      width: 100%;
+      font: inherit;
+      border-radius: 12px;
+    }
+    input {
+      padding: 12px 14px;
+      border: 1px solid var(--line);
+      margin-bottom: 14px;
+      background: #fff;
+    }
+    button {
+      padding: 12px 14px;
+      border: 0;
+      cursor: pointer;
+      color: #fff;
+      background: var(--accent);
+    }
+    pre {
+      margin: 14px 0 0;
+      padding: 12px;
+      border-radius: 12px;
+      min-height: 56px;
+      background: #201c18;
+      color: #f4efe6;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+  </style>
+</head>
+<body>
+  <section class="panel">
+    <h1>登录 Wechat MD Server</h1>
+    <p>当前服务启用了访问令牌保护。输入令牌后会写入安全 Cookie，并跳转到主页面。</p>
+    <label for="access-token">访问令牌</label>
+    <input id="access-token" type="password" autocomplete="current-password" />
+    <button id="login-submit">进入服务</button>
+    <pre id="login-result">等待登录</pre>
+  </section>
+  <script>
+    const result = document.getElementById("login-result");
+    document.getElementById("login-submit").addEventListener("click", async () => {
+      result.textContent = "登录中...";
+      const response = await fetch("/api/session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ access_token: document.getElementById("access-token").value.trim() })
+      });
+      const data = await response.json();
+      result.textContent = JSON.stringify(data, null, 2);
+      if (response.ok) {
+        window.location.href = "/";
+      }
+    });
+  </script>
+</body>
+</html>
