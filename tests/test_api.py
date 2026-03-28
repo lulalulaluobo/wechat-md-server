@@ -62,7 +62,8 @@ class ApiTests(unittest.TestCase):
         self.assertIn("同步服务管理台", response.text)
         self.assertIn("用户名", response.text)
         self.assertIn("密码", response.text)
-        self.assertIn("跟随系统", response.text)
+        self.assertNotIn("跟随系统", response.text)
+        self.assertNotIn('id="theme-mode"', response.text)
 
     def test_default_admin_login_success(self):
         login_response = self._login()

@@ -17,6 +17,61 @@ Open `http://127.0.0.1:8765` or `http://<your-lan-ip>:8765`.
 - Login: built-in single account
 - Settings page: `http://127.0.0.1:8765/settings` or `http://<your-lan-ip>:8765/settings`
 
+## Docker
+
+Recommended container base:
+
+- `python:3.14-slim-bookworm`
+- `amd64 / x86_64`
+- `docker-compose.yml` as the primary deployment entrypoint
+
+Start with Docker Compose:
+
+```bash
+docker compose build
+docker compose up -d
+docker compose logs -f
+```
+
+Production-oriented Compose:
+
+```bash
+cp .env.prod.example .env.prod
+docker compose -f docker-compose.prod.yml build
+docker compose -f docker-compose.prod.yml up -d
+docker compose -f docker-compose.prod.yml logs -f
+```
+
+Open:
+
+- `http://127.0.0.1:8765/login`
+- `http://<your-lan-ip>:8765/login`
+
+Container behavior:
+
+- the app listens on `0.0.0.0:8765`
+- runtime data is persisted through `./data:/app/data`
+- runtime config path is `/app/data/runtime-config.json`
+- temporary work output uses `/app/data/workdir-output`
+
+Deployment files:
+
+- `Dockerfile`
+- `.dockerignore`
+- `docker-compose.yml`
+- `docker-compose.prod.yml`
+- `.env.prod.example`
+
+Image size expectation:
+
+- recommended build target: about `180MB - 280MB`
+- conservative first-pass builds may land around `250MB - 340MB`
+
+Why not Alpine:
+
+- `Pillow` and `cryptography` are easier to keep stable on Debian slim
+- the project benefits more from predictable wheels and easier debugging than from saving a few tens of MB
+
 ## Required Environment
 
 Runtime secrets now depend on a master key. The service will not load encrypted runtime config without it.
@@ -115,21 +170,24 @@ Recommended layout:
 ```text
 /opt/wechat-md-server/
 ├── .env
-├── .venv/
-├── app/
 ├── data/
 │   ├── runtime-config.json
-│   └── workdir/
+│   ├── workdir/
+│   └── workdir-output/
+├── docker-compose.yml
 └── deploy/systemd/wechat-md-server.service.example
 ```
 
 Recommended deployment steps:
 
-1. Create a virtual environment and install requirements.
-2. Copy `.env.example` to `.env` and set a strong `WECHAT_MD_APP_MASTER_KEY`.
-3. Set `WECHAT_MD_SESSION_COOKIE_SECURE=true`.
-4. Run behind HTTPS reverse proxy such as Nginx or Caddy.
-5. Use the systemd sample in [wechat-md-server.service.example](/path/to/wechat-md-server/deploy/systemd/wechat-md-server.service.example).
+1. Copy `.env.example` to `.env` and set a strong `WECHAT_MD_APP_MASTER_KEY`.
+2. Set `WECHAT_MD_SESSION_COOKIE_SECURE=true`.
+3. Create the host `data/` directory if needed.
+4. Copy `.env.prod.example` to `.env.prod`.
+5. Run `docker compose -f docker-compose.prod.yml build` and `docker compose -f docker-compose.prod.yml up -d`.
+6. The production compose file still publishes `8765` directly, so you can access it with `http://<server-ip>:8765` if needed.
+7. If you later want reverse proxy only, change the port binding back to loopback and place Nginx or Caddy in front.
+8. If you prefer a non-container deployment, the systemd sample in [wechat-md-server.service.example](/path/to/wechat-md-server/deploy/systemd/wechat-md-server.service.example) remains available.
 
 Recommended reverse-proxy boundary:
 
@@ -143,6 +201,7 @@ Recommended reverse-proxy boundary:
 Back up:
 
 - `data/runtime-config.json`
+- `data/workdir/` if you intentionally keep successful temp artifacts
 - the `.env` file or at least `WECHAT_MD_APP_MASTER_KEY`
 
 Restore:
