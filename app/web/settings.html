@@ -3,684 +3,484 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Wechat MD Server Settings</title>
+  <title>设置 — Wechat MD</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/assets/admin.css">
 </head>
 <body>
-  <div class="admin-shell">
-    <aside class="sidebar">
-      <div>
-        <span class="brand-mark">Wechat MD Server</span>
-        <h1 class="brand-title">设置中心</h1>
-        <p class="brand-copy">这里维护同步目标、图片外链、运行行为和管理员安全设置。保存后立即生效，敏感字段不会在页面明文回显。</p>
-      </div>
+  <!-- Top Nav -->
+  <nav class="top-nav">
+    <div class="logo">Wechat <span>MD</span></div>
+    <a class="nav-item" href="/">转换</a>
+    <a class="nav-item active" href="/settings">设置</a>
+    <button id="logout-btn" class="nav-item logout">退出</button>
+  </nav>
 
-      <nav class="sidebar-nav" aria-label="主导航">
-        <a class="nav-link" href="/">
-          <span>转换</span>
-          <span class="status-badge info">Work</span>
-        </a>
-        <a class="nav-link active" href="/settings">
-          <span>设置</span>
-          <span class="status-badge warn">Admin</span>
-        </a>
-      </nav>
+  <div class="page">
+    <div class="page-header">
+      <h1>设置中心</h1>
+      <p>维护 FNS 同步目标、图片策略和账号安全。保存后立即生效。</p>
+    </div>
 
-      <div class="sidebar-footer">
-        <div class="sidebar-note">
-          <strong>配置边界</strong>
-          <p class="helper-text">设置页只负责全局配置，不承载单次任务的临时覆盖。转换页会直接消费这里保存的运行时配置。</p>
+    <!-- Tab Navigation -->
+    <div class="tab-nav" data-tab-group="settings">
+      <button class="tab-btn active" data-tab="fns">FNS 同步</button>
+      <button class="tab-btn" data-tab="image">图片模式</button>
+      <button class="tab-btn" data-tab="behavior">运行行为</button>
+      <button class="tab-btn" data-tab="security">账号安全</button>
+    </div>
+
+    <!-- Tab: FNS -->
+    <div class="tab-panel active" data-tab-panel="settings" data-tab-id="fns">
+      <div class="card">
+        <h2 class="card-title">FNS 配置</h2>
+        <p class="card-desc">填写 Fast Note Sync 服务信息。导入只填表，需要手动保存。</p>
+
+        <div class="field">
+          <label for="fns-json-input">粘贴 FNS JSON</label>
+          <textarea id="fns-json-input" placeholder='{"api":"https://...","apiToken":"...","vault":"obsidian"}' style="min-height:70px;"></textarea>
         </div>
-        <button id="logout-button" class="button ghost">退出登录</button>
-      </div>
-    </aside>
-
-    <div class="content-shell">
-      <header class="topbar">
-        <div>
-          <p class="eyebrow">Settings Center</p>
-          <h1 class="page-title">设置中心</h1>
-          <p class="page-copy">参考同步服务后台的组织方式，把核心配置和状态诊断拆开。左侧负责维护配置，右侧负责查看配置总览、连接诊断和保存结果。</p>
+        <div class="action-row" style="margin-top:8px;">
+          <button id="paste-fns-btn" class="btn btn-secondary">从剪贴板导入</button>
+          <button id="parse-fns-btn" class="btn btn-ghost">解析并填充</button>
         </div>
-        <div class="topbar-actions">
-          <div class="quick-chip">
-            <span>当前登录用户</span>
-            <strong id="metric-user">-</strong>
+
+        <div class="sep"></div>
+
+        <div class="field-row">
+          <div class="field">
+            <label for="fns-base-url">FNS 基础地址</label>
+            <input id="fns-base-url" placeholder="https://obsync.example.com">
+            <div class="field-hint" id="hint-fns-base-url"></div>
           </div>
-          <label class="theme-switcher" for="theme-select-settings">
-            <span>主题</span>
-            <select id="theme-select-settings" data-theme-select>
-              <option value="system">跟随系统</option>
-              <option value="light">浅色</option>
-              <option value="dark">深色</option>
-            </select>
+          <div class="field">
+            <label for="fns-vault">Vault</label>
+            <input id="fns-vault" placeholder="obsidian">
+            <div class="field-hint" id="hint-fns-vault"></div>
+          </div>
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label for="fns-target-dir">目标目录</label>
+            <input id="fns-target-dir" placeholder="00_Inbox/微信公众号">
+            <div class="field-hint" id="hint-fns-target-dir"></div>
+          </div>
+          <div class="field">
+            <label for="fns-token">FNS Token</label>
+            <input id="fns-token" type="password" placeholder="留空则保持不变">
+            <div class="field-hint text-muted" id="fns-token-meta"></div>
+          </div>
+        </div>
+        <div class="action-row">
+          <button id="clear-fns-token" class="btn btn-danger">清空 Token</button>
+          <button id="check-fns-btn" class="btn btn-secondary">检测 FNS 连接</button>
+        </div>
+        <div id="fns-result-area"></div>
+      </div>
+    </div>
+
+    <!-- Tab: Image -->
+    <div class="tab-panel" data-tab-panel="settings" data-tab-id="image">
+      <div class="card">
+        <h2 class="card-title">图片外链设置</h2>
+        <p class="card-desc">选择文章中图片的处理模式。</p>
+
+        <div class="radio-group">
+          <label class="radio-option">
+            <input type="radio" name="image-mode" id="image-mode-wechat" value="wechat_hotlink">
+            <div>
+              <strong>微信原链</strong>
+              <div class="desc">不上传图片，Markdown 保留微信图片链接。</div>
+            </div>
+          </label>
+          <label class="radio-option">
+            <input type="radio" name="image-mode" id="image-mode-s3" value="s3_hotlink">
+            <div>
+              <strong>S3 图床外链</strong>
+              <div class="desc">静态图上传到 S3 图床，GIF/SVG 保留微信原链。</div>
+            </div>
           </label>
         </div>
-      </header>
 
-      <main class="page-main">
-        <section class="section-block">
-          <div class="section-head">
-            <div>
-              <h2>配置总览</h2>
-              <p>先确认当前账号、FNS 目标和图片模式，再继续修改细项。</p>
+        <div id="s3-panel" class="hidden" style="margin-top:16px;">
+          <div class="sep"></div>
+          <div class="field-row">
+            <div class="field">
+              <label for="s3-endpoint">S3 Endpoint</label>
+              <input id="s3-endpoint" placeholder="https://s3.example.com">
+              <div class="field-hint" id="hint-s3-endpoint"></div>
+            </div>
+            <div class="field">
+              <label for="s3-region">Region</label>
+              <input id="s3-region" placeholder="auto">
+              <div class="field-hint" id="hint-s3-region"></div>
             </div>
           </div>
-
-          <div class="overview-strip">
-            <article class="metric-card compact">
-              <div class="metric-label">认证状态</div>
-              <div class="metric-value" id="metric-auth">-</div>
-              <div class="metric-foot">当前服务访问保护</div>
-            </article>
-            <article class="metric-card compact">
-              <div class="metric-label">FNS Vault</div>
-              <div class="metric-value" id="metric-vault">-</div>
-              <div class="metric-foot">当前同步目标</div>
-            </article>
-            <article class="metric-card compact">
-              <div class="metric-label">图片模式</div>
-              <div class="metric-value" id="metric-image-mode">-</div>
-              <div class="metric-foot">微信原链或 S3 外链</div>
-            </article>
-            <article class="metric-card compact">
-              <div class="metric-label">运行时覆盖</div>
-              <div class="metric-value" id="metric-overrides">-</div>
-              <div class="metric-foot">配置文件中的有效字段数</div>
-            </article>
-          </div>
-        </section>
-
-        <section class="section-block">
-          <div class="settings-grid">
-            <div class="primary-stack">
-              <section class="module-card">
-                <div class="module-header">
-                  <div class="section-head" style="margin-bottom:0;">
-                    <div>
-                      <h2>FNS 配置</h2>
-                      <p>填写 Fast Note Sync 的基础地址、Vault、目录和 Token。导入只会填表，不会自动保存。</p>
-                    </div>
-                    <button id="check-fns-button" class="button ghost">检测 FNS 连接</button>
-                  </div>
-                </div>
-                <div class="module-body">
-                  <div class="field-grid one">
-                    <div class="field">
-                      <label for="fns-json-input">粘贴 FNS JSON</label>
-                      <textarea id="fns-json-input" placeholder='{"api":"https://...","apiToken":"...","vault":"obsidian"}'></textarea>
-                    </div>
-                  </div>
-
-                  <div class="action-row">
-                    <button id="paste-fns-button" class="button secondary">从剪贴板导入 FNS</button>
-                    <button id="parse-fns-button" class="button ghost">解析并填充</button>
-                    <button id="clear-fns-token" class="button danger">清空 FNS Token</button>
-                  </div>
-
-                  <div class="field-grid">
-                    <div class="field">
-                      <label for="fns-base-url">FNS 基础地址</label>
-                      <input id="fns-base-url" placeholder="https://obsync.example.com">
-                      <div class="field-hint" id="hint-fns-base-url"></div>
-                    </div>
-                    <div class="field">
-                      <label for="fns-vault">Vault</label>
-                      <input id="fns-vault" placeholder="obsidian">
-                      <div class="field-hint" id="hint-fns-vault"></div>
-                    </div>
-                    <div class="field">
-                      <label for="fns-target-dir">目标目录</label>
-                      <input id="fns-target-dir" placeholder="00_Inbox/微信公众号">
-                      <div class="field-hint" id="hint-fns-target-dir"></div>
-                    </div>
-                    <div class="field">
-                      <label for="fns-token">FNS Token</label>
-                      <input id="fns-token" type="password" placeholder="留空则保持不变">
-                      <div class="helper-text" id="fns-token-meta"></div>
-                      <div class="field-hint" id="hint-fns-token"></div>
-                    </div>
-                  </div>
-                </div>
-              </section>
-
-              <section class="module-card">
-                <div class="module-header">
-                  <div class="section-head" style="margin-bottom:0;">
-                    <div>
-                      <h2>图片外链设置</h2>
-                      <p>没有图床时推荐微信原链。只有你已经部署图床时，才需要启用 S3 图床外链。</p>
-                    </div>
-                  </div>
-                </div>
-                <div class="module-body">
-                  <div class="radio-stack">
-                    <label class="choice-card">
-                      <div class="checkbox-row">
-                        <input type="radio" name="image-mode" id="image-mode-wechat" value="wechat_hotlink">
-                        <strong>微信原链</strong>
-                      </div>
-                      <p class="helper-text">不上传图片，Markdown 直接保留微信图片外链。</p>
-                    </label>
-                    <label class="choice-card">
-                      <div class="checkbox-row">
-                        <input type="radio" name="image-mode" id="image-mode-s3" value="s3_hotlink">
-                        <strong>S3 图床外链</strong>
-                      </div>
-                      <p class="helper-text">静态图压缩后上传到通用 S3 图床，GIF / SVG 保留微信原链。</p>
-                    </label>
-                  </div>
-
-                  <div id="s3-settings-panel" style="margin-top:16px;">
-                    <div class="field-grid">
-                      <div class="field">
-                        <label for="image-storage-endpoint">S3 Endpoint</label>
-                        <input id="image-storage-endpoint" placeholder="https://s3.example.com">
-                        <div class="field-hint" id="hint-image-storage-endpoint"></div>
-                      </div>
-                      <div class="field">
-                        <label for="image-storage-region">Region</label>
-                        <input id="image-storage-region" placeholder="auto">
-                        <div class="field-hint" id="hint-image-storage-region"></div>
-                      </div>
-                      <div class="field">
-                        <label for="image-storage-bucket">Bucket</label>
-                        <input id="image-storage-bucket" placeholder="wechat-images">
-                        <div class="field-hint" id="hint-image-storage-bucket"></div>
-                      </div>
-                      <div class="field">
-                        <label for="image-storage-access-key-id">Access Key ID</label>
-                        <input id="image-storage-access-key-id" placeholder="AKIA...">
-                        <div class="field-hint" id="hint-image-storage-access-key-id"></div>
-                      </div>
-                      <div class="field">
-                        <label for="image-storage-secret-access-key">Secret Access Key</label>
-                        <input id="image-storage-secret-access-key" type="password" placeholder="留空则保持不变">
-                        <div class="helper-text" id="image-storage-secret-meta"></div>
-                        <div class="field-hint" id="hint-image-storage-secret-access-key"></div>
-                      </div>
-                      <div class="field">
-                        <label for="image-storage-path-template">路径模板</label>
-                        <input id="image-storage-path-template" placeholder="wechat/{year}/{filename}">
-                        <div class="field-hint" id="hint-image-storage-path-template"></div>
-                      </div>
-                      <div class="field">
-                        <label for="image-storage-public-base-url">公开访问域名</label>
-                        <input id="image-storage-public-base-url" placeholder="https://img.example.com">
-                        <div class="field-hint" id="hint-image-storage-public-base-url"></div>
-                      </div>
-                    </div>
-
-                    <div class="action-row">
-                      <button id="clear-image-storage-secret" class="button danger">清空图床密钥</button>
-                    </div>
-                  </div>
-                </div>
-              </section>
-
-              <section class="module-card">
-                <div class="module-header">
-                  <div class="section-head" style="margin-bottom:0;">
-                    <div>
-                      <h2>运行行为</h2>
-                      <p>控制转换成功后的临时目录处理方式。失败任务仍会默认清理。</p>
-                    </div>
-                  </div>
-                </div>
-                <div class="module-body">
-                  <div class="field-grid one">
-                    <div class="field inline-toggle">
-                      <label for="cleanup-temp-on-success">转换成功后清理临时目录</label>
-                      <div class="checkbox-row">
-                        <input id="cleanup-temp-on-success" type="checkbox">
-                        <span class="helper-text">关闭后会在服务端工作目录保留成功任务产物。</span>
-                      </div>
-                      <div class="field-hint success" id="hint-cleanup-temp-on-success">失败任务仍会默认清理临时目录。</div>
-                    </div>
-                  </div>
-                </div>
-              </section>
-
-              <section class="module-card">
-                <div class="module-header">
-                  <div class="section-head" style="margin-bottom:0;">
-                    <div>
-                      <h2>账号安全</h2>
-                      <p>当前登录用户：<strong id="current-user-label">-</strong></p>
-                    </div>
-                  </div>
-                </div>
-                <div class="module-body">
-                  <div class="field-grid">
-                    <div class="field">
-                      <label for="current-password">当前密码</label>
-                      <input id="current-password" type="password" autocomplete="current-password">
-                    </div>
-                    <div class="field">
-                      <label for="new-password">新密码</label>
-                      <input id="new-password" type="password" autocomplete="new-password">
-                    </div>
-                  </div>
-
-                  <div class="action-row">
-                    <button id="change-password-button" class="button secondary">修改密码</button>
-                  </div>
-                </div>
-              </section>
+          <div class="field-row">
+            <div class="field">
+              <label for="s3-bucket">Bucket</label>
+              <input id="s3-bucket" placeholder="wechat-images">
+              <div class="field-hint" id="hint-s3-bucket"></div>
             </div>
-
-            <aside class="side-stack">
-              <section class="admin-card">
-                <div class="panel-header">
-                  <div>
-                    <h3>连接诊断</h3>
-                    <p>查看 FNS 当前连通性、Token 有效性和目标 vault 是否存在。</p>
-                  </div>
-                </div>
-                <div class="status-list">
-                  <div class="status-row">
-                    <div>
-                      <strong id="metric-fns-health">待检测</strong>
-                      <div class="helper-text" id="metric-fns-health-detail">尚未执行连接检测</div>
-                    </div>
-                    <span class="status-badge info">FNS</span>
-                  </div>
-                </div>
-                <div id="fns-health-summary" class="status-panel"></div>
-                <div class="raw-json">
-                  <details>
-                    <summary>原始 JSON</summary>
-                    <pre id="fns-status-result">等待检测</pre>
-                  </details>
-                </div>
-              </section>
-
-              <section class="admin-card">
-                <div class="panel-header">
-                  <div>
-                    <h3>操作结果</h3>
-                    <p>保存、导入和密码更新都会先显示结构化反馈。</p>
-                  </div>
-                  <button id="save-settings" class="button">保存并生效</button>
-                </div>
-                <div id="settings-feedback" class="status-panel"></div>
-                <div class="raw-json">
-                  <details open>
-                    <summary>原始 JSON</summary>
-                    <pre id="settings-result">等待操作</pre>
-                  </details>
-                </div>
-              </section>
-            </aside>
+            <div class="field">
+              <label for="s3-access-key">Access Key ID</label>
+              <input id="s3-access-key" placeholder="AKIA...">
+              <div class="field-hint" id="hint-s3-access-key"></div>
+            </div>
           </div>
-        </section>
-      </main>
+          <div class="field-row">
+            <div class="field">
+              <label for="s3-secret-key">Secret Access Key</label>
+              <input id="s3-secret-key" type="password" placeholder="留空则保持不变">
+              <div class="field-hint text-muted" id="s3-secret-meta"></div>
+            </div>
+            <div class="field">
+              <label for="s3-path-tpl">路径模板</label>
+              <input id="s3-path-tpl" placeholder="wechat/{year}/{filename}">
+              <div class="field-hint" id="hint-s3-path-tpl"></div>
+            </div>
+          </div>
+          <div class="field">
+            <label for="s3-public-url">公开访问域名</label>
+            <input id="s3-public-url" placeholder="https://img.example.com">
+            <div class="field-hint" id="hint-s3-public-url"></div>
+          </div>
+          <div class="action-row">
+            <button id="clear-s3-secret" class="btn btn-danger">清空图床密钥</button>
+          </div>
+        </div>
+      </div>
     </div>
+
+    <!-- Tab: Behavior -->
+    <div class="tab-panel" data-tab-panel="settings" data-tab-id="behavior">
+      <div class="card">
+        <h2 class="card-title">运行行为</h2>
+        <p class="card-desc">控制转换成功后的清理策略。</p>
+        <label class="check-row">
+          <input id="cleanup-on-success" type="checkbox">
+          转换成功后自动清理临时目录
+        </label>
+        <p class="text-sm text-muted" style="margin-top:6px;">关闭后会在服务端保留成功任务产物。失败任务始终会清理。</p>
+      </div>
+    </div>
+
+    <!-- Tab: Security -->
+    <div class="tab-panel" data-tab-panel="settings" data-tab-id="security">
+      <div class="card">
+        <h2 class="card-title">修改密码</h2>
+        <p class="card-desc">当前登录用户：<strong id="current-user">-</strong></p>
+        <div class="field-row">
+          <div class="field">
+            <label for="current-password">当前密码</label>
+            <input id="current-password" type="password" autocomplete="current-password">
+          </div>
+          <div class="field">
+            <label for="new-password">新密码</label>
+            <input id="new-password" type="password" autocomplete="new-password">
+          </div>
+        </div>
+        <div class="action-row">
+          <button id="change-pw-btn" class="btn btn-secondary">修改密码</button>
+        </div>
+        <div id="pw-result-area"></div>
+      </div>
+    </div>
+
+    <!-- Save Button (sticky at bottom of all tabs) -->
+    <div class="action-row" style="margin-top:8px;">
+      <button id="save-settings" class="btn btn-primary">保存并生效</button>
+    </div>
+    <div id="save-result-area"></div>
   </div>
 
   <script src="/assets/admin.js"></script>
   <script>
-    const resultEl = document.getElementById("settings-result");
-    const fnsStatusEl = document.getElementById("fns-status-result");
+    AdminUI.initTabs();
     const clearFields = new Set();
-    const s3FieldIds = [
-      "image-storage-endpoint",
-      "image-storage-region",
-      "image-storage-bucket",
-      "image-storage-access-key-id",
-      "image-storage-secret-access-key",
-      "image-storage-path-template",
-      "image-storage-public-base-url",
-    ];
 
-    AdminUI.initThemeControls();
-
+    /* ── Helpers ── */
     function getImageMode() {
       return document.querySelector('input[name="image-mode"]:checked')?.value || "wechat_hotlink";
     }
 
-    function setSettingsFeedback(title, tone, description, items = []) {
-      AdminUI.setHtml("settings-feedback", AdminUI.resultPanel({
-        title,
-        tone,
-        statusText: tone === "success" ? "成功" : tone === "error" ? "失败" : tone === "warn" ? "待处理" : "待操作",
-        description,
-        items,
-      }));
+    function syncS3Panel() {
+      document.getElementById("s3-panel").classList.toggle("hidden", getImageMode() !== "s3_hotlink");
     }
 
-    function setFnsFeedback(title, tone, description, items = []) {
-      AdminUI.setHtml("fns-health-summary", AdminUI.resultPanel({
-        title,
-        tone,
-        statusText: tone === "success" ? "正常" : tone === "error" ? "异常" : tone === "warn" ? "待处理" : "待检测",
-        description,
-        items,
-      }));
-      AdminUI.setText("metric-fns-health", tone === "success" ? "连接正常" : tone === "error" ? "连接异常" : tone === "warn" ? "待处理" : "待检测");
-      AdminUI.setText("metric-fns-health-detail", description);
-    }
+    document.querySelectorAll('input[name="image-mode"]').forEach((el) =>
+      el.addEventListener("change", syncS3Panel)
+    );
 
+    /* ── Validators ── */
     const validators = {
-      "fns-base-url": (value) => !value || /^https?:\/\//i.test(value)
-        ? { ok: true, text: value ? "地址格式正确。" : "可留空，表示暂不配置 FNS。" }
-        : { ok: false, text: "必须以 http:// 或 https:// 开头。" },
-      "fns-vault": (value) => !document.getElementById("fns-base-url").value.trim() || value
-        ? { ok: true, text: value ? "Vault 已填写。" : "未启用 FNS 时可以留空。" }
-        : { ok: false, text: "启用 FNS 时请输入 vault 名称。" },
-      "fns-target-dir": (value) => value
-        ? { ok: true, text: "将同步到该目录。" }
-        : { ok: false, text: "请输入目标目录。" },
-      "fns-token": (value) => !document.getElementById("fns-base-url").value.trim() || value || document.getElementById("fns-token-meta").textContent.includes("已配置")
-        ? { ok: true, text: "FNS Token 可用。" }
-        : { ok: false, text: "启用 FNS 时需要填写 Token。" },
-      "image-storage-endpoint": (value) => getImageMode() !== "s3_hotlink" || /^https?:\/\//i.test(value)
-        ? { ok: true, text: getImageMode() === "s3_hotlink" ? "Endpoint 格式正确。" : "当前模式无需填写。" }
-        : { ok: false, text: "S3 Endpoint 必须以 http:// 或 https:// 开头。" },
-      "image-storage-region": (value) => getImageMode() !== "s3_hotlink" || value
-        ? { ok: true, text: getImageMode() === "s3_hotlink" ? "Region 已填写。" : "当前模式无需填写。" }
-        : { ok: false, text: "请选择或填写 S3 Region。" },
-      "image-storage-bucket": (value) => getImageMode() !== "s3_hotlink" || value
-        ? { ok: true, text: getImageMode() === "s3_hotlink" ? "Bucket 已填写。" : "当前模式无需填写。" }
-        : { ok: false, text: "请输入 Bucket。" },
-      "image-storage-access-key-id": (value) => getImageMode() !== "s3_hotlink" || value
-        ? { ok: true, text: getImageMode() === "s3_hotlink" ? "Access Key ID 已填写。" : "当前模式无需填写。" }
-        : { ok: false, text: "请输入 Access Key ID。" },
-      "image-storage-secret-access-key": (value) => getImageMode() !== "s3_hotlink" || value || document.getElementById("image-storage-secret-meta").textContent.includes("已配置")
-        ? { ok: true, text: getImageMode() === "s3_hotlink" ? "图床密钥可用。" : "当前模式无需填写。" }
-        : { ok: false, text: "请输入 Secret Access Key。" },
-      "image-storage-path-template": (value) => getImageMode() !== "s3_hotlink" || value
-        ? { ok: true, text: getImageMode() === "s3_hotlink" ? "路径模板已填写。" : "当前模式无需填写。" }
-        : { ok: false, text: "请输入路径模板。" },
-      "image-storage-public-base-url": (value) => getImageMode() !== "s3_hotlink" || /^https?:\/\//i.test(value)
-        ? { ok: true, text: getImageMode() === "s3_hotlink" ? "公开访问域名格式正确。" : "当前模式无需填写。" }
-        : { ok: false, text: "公开访问域名必须以 http:// 或 https:// 开头。" },
+      "fns-base-url": (v) => !v || /^https?:\/\//i.test(v)
+        ? { ok: true, text: v ? "格式正确" : "" }
+        : { ok: false, text: "必须以 http:// 或 https:// 开头" },
+      "fns-vault": (v) => !document.getElementById("fns-base-url").value.trim() || v
+        ? { ok: true, text: "" }
+        : { ok: false, text: "启用 FNS 时请填写 Vault" },
+      "fns-target-dir": (v) => v
+        ? { ok: true, text: "" }
+        : { ok: false, text: "请输入目标目录" },
+      "fns-token": (v) => !document.getElementById("fns-base-url").value.trim() || v || document.getElementById("fns-token-meta").textContent.includes("已配置")
+        ? { ok: true, text: "" }
+        : { ok: false, text: "启用 FNS 时需要 Token" },
+      "s3-endpoint": (v) => getImageMode() !== "s3_hotlink" || /^https?:\/\//i.test(v)
+        ? { ok: true, text: "" }
+        : { ok: false, text: "必须以 http:// 或 https:// 开头" },
+      "s3-region": (v) => getImageMode() !== "s3_hotlink" || v
+        ? { ok: true, text: "" }
+        : { ok: false, text: "请填写 Region" },
+      "s3-bucket": (v) => getImageMode() !== "s3_hotlink" || v
+        ? { ok: true, text: "" }
+        : { ok: false, text: "请填写 Bucket" },
+      "s3-access-key": (v) => getImageMode() !== "s3_hotlink" || v
+        ? { ok: true, text: "" }
+        : { ok: false, text: "请填写 Access Key ID" },
+      "s3-secret-key": (v) => getImageMode() !== "s3_hotlink" || v || document.getElementById("s3-secret-meta").textContent.includes("已配置")
+        ? { ok: true, text: "" }
+        : { ok: false, text: "请填写 Secret Access Key" },
+      "s3-path-tpl": (v) => getImageMode() !== "s3_hotlink" || v
+        ? { ok: true, text: "" }
+        : { ok: false, text: "请填写路径模板" },
+      "s3-public-url": (v) => getImageMode() !== "s3_hotlink" || /^https?:\/\//i.test(v)
+        ? { ok: true, text: "" }
+        : { ok: false, text: "必须以 http:// 或 https:// 开头" },
     };
 
-    function markChanged(id) {
-      document.getElementById(id)?.classList.add("field-changed");
-    }
-
-    function resetChanged() {
-      document.querySelectorAll(".field-changed").forEach((node) => node.classList.remove("field-changed"));
-    }
-
-    function setResult(message, data) {
-      resultEl.textContent = [message, data ? AdminUI.prettyJson(data) : ""].filter(Boolean).join("\n\n");
-    }
-
-    function updateOverview(data) {
-      AdminUI.setText("metric-auth", data.auth_enabled ? "已开启" : "未开启");
-      AdminUI.setText("metric-user", data.current_user?.username || "-");
-      AdminUI.setText("metric-vault", data.fns_vault || "未配置");
-      AdminUI.setText("metric-image-mode", data.image_mode === "s3_hotlink" ? "S3 图床外链" : "微信原链");
-      AdminUI.setText("metric-overrides", String((data.runtime_overrides || []).length));
-      AdminUI.setText("current-user-label", data.current_user?.username || "-");
-    }
-
-    function setHint(id, state, text) {
-      const input = document.getElementById(id);
-      const hint = document.getElementById(`hint-${id}`);
-      if (!input || !hint) return;
-      hint.textContent = text;
-      hint.className = `field-hint ${state ? "success" : "error"}`;
-      input.classList.toggle("field-error", !state);
-    }
-
-    function syncImageModeUI() {
-      const useS3 = getImageMode() === "s3_hotlink";
-      document.getElementById("s3-settings-panel").style.display = useS3 ? "block" : "none";
-      validateForm();
-    }
-
     function validateField(id) {
-      const value = document.getElementById(id)?.value?.trim() || "";
-      const result = validators[id](value);
-      setHint(id, result.ok, result.text);
+      const val = document.getElementById(id)?.value?.trim() || "";
+      const result = validators[id]?.(val);
+      if (!result) return true;
+      const hintEl = document.getElementById(`hint-${id}`);
+      if (hintEl) {
+        hintEl.textContent = result.text;
+        hintEl.className = `field-hint ${result.ok ? "success" : "error"}`;
+      }
+      const input = document.getElementById(id);
+      if (input) input.classList.toggle("field-error", !result.ok);
       return result.ok;
     }
 
-    function validateForm() {
-      const ids = ["fns-base-url", "fns-vault", "fns-target-dir", "fns-token", ...s3FieldIds];
-      const allValid = ids.every((id) => validateField(id));
-      document.getElementById("save-settings").disabled = !allValid;
-      return allValid;
+    function validateAll() {
+      const ids = Object.keys(validators);
+      const ok = ids.every(validateField);
+      document.getElementById("save-settings").disabled = !ok;
+      return ok;
     }
 
-    function parseFnsJson(rawText) {
+    Object.keys(validators).forEach((id) => {
+      document.getElementById(id)?.addEventListener("input", validateAll);
+    });
+
+    /* ── FNS Import ── */
+    function parseFnsJson(raw) {
       let parsed;
-      try {
-        parsed = JSON.parse(rawText);
-      } catch (error) {
-        throw new Error("FNS 配置不是有效 JSON");
-      }
-      const missing = ["api", "apiToken", "vault"].filter((key) => !String(parsed[key] || "").trim());
-      if (missing.length) {
-        throw new Error(`FNS 配置缺少字段: ${missing.join(", ")}`);
-      }
+      try { parsed = JSON.parse(raw); } catch { throw new Error("不是有效的 JSON"); }
+      const missing = ["api", "apiToken", "vault"].filter((k) => !String(parsed[k] || "").trim());
+      if (missing.length) throw new Error(`缺少字段: ${missing.join(", ")}`);
       const api = String(parsed.api).trim();
-      if (!/^https?:\/\//i.test(api)) {
-        throw new Error("FNS 基础地址格式无效，必须以 http:// 或 https:// 开头");
-      }
-      return {
-        fns_base_url: api.replace(/\/+$/, ""),
-        fns_token: String(parsed.apiToken).trim(),
-        fns_vault: String(parsed.vault).trim(),
-      };
+      if (!/^https?:\/\//i.test(api)) throw new Error("FNS 地址格式无效");
+      return { fns_base_url: api.replace(/\/+$/, ""), fns_token: String(parsed.apiToken).trim(), fns_vault: String(parsed.vault).trim() };
     }
 
-    function applyFnsImport(parsed) {
-      document.getElementById("fns-base-url").value = parsed.fns_base_url;
-      document.getElementById("fns-vault").value = parsed.fns_vault;
-      document.getElementById("fns-token").value = parsed.fns_token;
-      ["fns-base-url", "fns-vault", "fns-token"].forEach(markChanged);
+    function applyFnsImport(p) {
+      document.getElementById("fns-base-url").value = p.fns_base_url;
+      document.getElementById("fns-vault").value = p.fns_vault;
+      document.getElementById("fns-token").value = p.fns_token;
       clearFields.delete("fns_token");
-      document.getElementById("fns-token-meta").textContent = "本次已导入新的 FNS Token，保存后才会写入服务端。";
-      validateForm();
-      setSettingsFeedback("FNS 导入成功", "success", "已识别域名、Vault 和 Token，请确认后保存。", [
-        { label: "FNS 地址", value: parsed.fns_base_url },
-        { label: "Vault", value: parsed.fns_vault },
-        { label: "Token", value: "已填入" },
-      ]);
-      setResult("已识别 FNS 配置并填充表单。", {
-        fns_base_url: parsed.fns_base_url,
-        fns_vault: parsed.fns_vault,
-        fns_token: "已填入",
-      });
+      document.getElementById("fns-token-meta").textContent = "已导入新 Token，保存后生效";
+      validateAll();
+      AdminUI.toast("FNS 配置已填充，请确认后保存", "success");
     }
 
-    async function loadSettings() {
-      const response = await fetch("/api/admin/settings");
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.detail || JSON.stringify(data));
-      }
-      document.getElementById("fns-base-url").value = data.fns_base_url || "";
-      document.getElementById("fns-vault").value = data.fns_vault || "";
-      document.getElementById("fns-target-dir").value = data.fns_target_dir || "";
-      document.getElementById("fns-token").value = "";
-      document.getElementById("cleanup-temp-on-success").checked = Boolean(data.cleanup_temp_on_success);
-      document.getElementById("fns-token-meta").textContent = data.fns_token_configured ? `已配置：${data.fns_token_masked}` : "当前未配置";
-
-      document.getElementById(data.image_mode === "s3_hotlink" ? "image-mode-s3" : "image-mode-wechat").checked = true;
-      document.getElementById("image-storage-endpoint").value = data.image_storage_endpoint || "";
-      document.getElementById("image-storage-region").value = data.image_storage_region || "";
-      document.getElementById("image-storage-bucket").value = data.image_storage_bucket || "";
-      document.getElementById("image-storage-access-key-id").value = data.image_storage_access_key_id || "";
-      document.getElementById("image-storage-secret-access-key").value = "";
-      document.getElementById("image-storage-path-template").value = data.image_storage_path_template || "";
-      document.getElementById("image-storage-public-base-url").value = data.image_storage_public_base_url || "";
-      document.getElementById("image-storage-secret-meta").textContent = data.image_storage_secret_access_key_configured
-        ? `已配置：${data.image_storage_secret_access_key_masked}`
-        : "当前未配置";
-
-      updateOverview(data);
-      clearFields.clear();
-      resetChanged();
-      syncImageModeUI();
-      validateForm();
-      setSettingsFeedback("等待操作", "info", "修改字段后点击“保存并生效”，右侧会显示结构化结果。", [
-        { label: "当前用户", value: data.current_user?.username || "-" },
-        { label: "图片模式", value: data.image_mode === "s3_hotlink" ? "S3 图床外链" : "微信原链" },
-      ]);
-      await checkFnsStatus();
-    }
-
-    async function checkFnsStatus() {
-      setFnsFeedback("正在检测 FNS", "info", "正在请求用户信息和 vault 列表。");
-      const response = await fetch("/api/admin/fns-status");
-      const data = await response.json();
-      fnsStatusEl.textContent = AdminUI.prettyJson(data);
-      if (!response.ok) {
-        setFnsFeedback("检测失败", "error", data.detail || "无法读取 FNS 状态。");
-        return;
-      }
-      if (!data.configured) {
-        setFnsFeedback("FNS 尚未配置", "warn", data.message || "请先填写必要的 FNS 配置。", [
-          { label: "服务地址", value: data.base_url || "未配置" },
-          { label: "Vault", value: data.vault_name || "未配置" },
-        ]);
-      } else if (data.connected && data.vault_exists) {
-        setFnsFeedback("连接正常", "success", data.message || "目标 vault 可正常使用。", [
-          { label: "服务地址", value: data.base_url || "-" },
-          { label: "Vault", value: data.vault_name || "-" },
-          { label: "用户", value: data.user?.nickname || data.user?.username || "-" },
-        ]);
-      } else if (data.connected) {
-        setFnsFeedback("连接正常但目标异常", "warn", data.message || "请确认目标 vault 名称。", [
-          { label: "服务地址", value: data.base_url || "-" },
-          { label: "Vault", value: data.vault_name || "-" },
-          { label: "Vault 数量", value: data.vault_count ?? "-" },
-        ]);
-      } else {
-        setFnsFeedback("连接异常", "error", data.message || "无法连接 FNS。", [
-          { label: "服务地址", value: data.base_url || "未配置" },
-          { label: "Vault", value: data.vault_name || "未配置" },
-        ]);
-      }
-    }
-
-    document.getElementById("paste-fns-button").addEventListener("click", async () => {
+    document.getElementById("paste-fns-btn").addEventListener("click", async () => {
       try {
-        const rawText = await navigator.clipboard.readText();
-        document.getElementById("fns-json-input").value = rawText;
-        applyFnsImport(parseFnsJson(rawText));
-      } catch (error) {
-        setSettingsFeedback("导入失败", "error", error && error.message && error.message.includes("JSON")
-          ? error.message
-          : "读取剪贴板失败，请改用手动粘贴 JSON 文本。");
+        const text = await navigator.clipboard.readText();
+        document.getElementById("fns-json-input").value = text;
+        applyFnsImport(parseFnsJson(text));
+      } catch (err) {
+        AdminUI.toast(err?.message?.includes("JSON") ? err.message : "剪贴板读取失败，请手动粘贴", "error");
       }
     });
 
-    document.getElementById("parse-fns-button").addEventListener("click", () => {
+    document.getElementById("parse-fns-btn").addEventListener("click", () => {
       try {
         applyFnsImport(parseFnsJson(document.getElementById("fns-json-input").value.trim()));
-      } catch (error) {
-        setSettingsFeedback("解析失败", "error", String(error.message || error));
-      }
+      } catch (err) { AdminUI.toast(String(err.message || err), "error"); }
     });
 
     document.getElementById("clear-fns-token").addEventListener("click", () => {
       clearFields.add("fns_token");
       document.getElementById("fns-token").value = "";
-      document.getElementById("fns-token-meta").textContent = "本次保存会清空 FNS Token。";
-      markChanged("fns-token");
-      validateForm();
-      setSettingsFeedback("已标记清空", "warn", "保存时会清空 FNS Token。");
+      document.getElementById("fns-token-meta").textContent = "保存时将清空 Token";
+      validateAll();
+      AdminUI.toast("已标记清空 Token，保存后生效", "warn");
     });
 
-    document.getElementById("clear-image-storage-secret").addEventListener("click", () => {
+    document.getElementById("clear-s3-secret").addEventListener("click", () => {
       clearFields.add("image_storage_secret_access_key");
-      document.getElementById("image-storage-secret-access-key").value = "";
-      document.getElementById("image-storage-secret-meta").textContent = "本次保存会清空图床密钥。";
-      markChanged("image-storage-secret-access-key");
-      validateForm();
-      setSettingsFeedback("已标记清空", "warn", "保存时会清空图床 Secret Access Key。");
+      document.getElementById("s3-secret-key").value = "";
+      document.getElementById("s3-secret-meta").textContent = "保存时将清空密钥";
+      validateAll();
+      AdminUI.toast("已标记清空图床密钥", "warn");
     });
 
+    /* ── Check FNS ── */
+    document.getElementById("check-fns-btn").addEventListener("click", async () => {
+      const btn = document.getElementById("check-fns-btn");
+      btn.disabled = true;
+      btn.textContent = "检测中…";
+      try {
+        const res = await fetch("/api/admin/fns-status");
+        const data = await res.json();
+        if (data.connected && data.vault_exists) {
+          AdminUI.toast("FNS 连接正常", "success");
+          AdminUI.setHtml("fns-result-area", AdminUI.resultHtml({
+            title: "连接正常", tone: "success",
+            description: data.message,
+            items: [{ label: "服务地址", value: data.base_url }, { label: "Vault", value: data.vault_name }],
+            json: data,
+          }));
+        } else {
+          AdminUI.toast(data.message || "连接异常", data.connected ? "warn" : "error");
+          AdminUI.setHtml("fns-result-area", AdminUI.resultHtml({
+            title: data.connected ? "目标异常" : "连接失败",
+            tone: data.connected ? "warn" : "error",
+            description: data.message,
+            json: data,
+          }));
+        }
+      } catch (err) { AdminUI.toast("检测失败", "error"); }
+      finally { btn.disabled = false; btn.textContent = "检测 FNS 连接"; }
+    });
+
+    /* ── Save Settings ── */
     document.getElementById("save-settings").addEventListener("click", async () => {
+      if (!validateAll()) return;
+      const btn = document.getElementById("save-settings");
+      btn.disabled = true;
+      btn.textContent = "保存中…";
+
       const payload = {
         fns_base_url: document.getElementById("fns-base-url").value.trim(),
         fns_vault: document.getElementById("fns-vault").value.trim(),
         fns_target_dir: document.getElementById("fns-target-dir").value.trim(),
-        cleanup_temp_on_success: document.getElementById("cleanup-temp-on-success").checked,
+        cleanup_temp_on_success: document.getElementById("cleanup-on-success").checked,
         image_mode: getImageMode(),
-        image_storage_endpoint: document.getElementById("image-storage-endpoint").value.trim(),
-        image_storage_region: document.getElementById("image-storage-region").value.trim(),
-        image_storage_bucket: document.getElementById("image-storage-bucket").value.trim(),
-        image_storage_access_key_id: document.getElementById("image-storage-access-key-id").value.trim(),
-        image_storage_path_template: document.getElementById("image-storage-path-template").value.trim(),
-        image_storage_public_base_url: document.getElementById("image-storage-public-base-url").value.trim(),
+        image_storage_endpoint: document.getElementById("s3-endpoint").value.trim(),
+        image_storage_region: document.getElementById("s3-region").value.trim(),
+        image_storage_bucket: document.getElementById("s3-bucket").value.trim(),
+        image_storage_access_key_id: document.getElementById("s3-access-key").value.trim(),
+        image_storage_path_template: document.getElementById("s3-path-tpl").value.trim(),
+        image_storage_public_base_url: document.getElementById("s3-public-url").value.trim(),
         clear_fields: Array.from(clearFields),
       };
       const fnsToken = document.getElementById("fns-token").value.trim();
-      const storageSecret = document.getElementById("image-storage-secret-access-key").value.trim();
+      const s3Secret = document.getElementById("s3-secret-key").value.trim();
       if (fnsToken) payload.fns_token = fnsToken;
-      if (storageSecret) payload.image_storage_secret_access_key = storageSecret;
+      if (s3Secret) payload.image_storage_secret_access_key = s3Secret;
 
-      const response = await fetch("/api/admin/settings", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      const data = await response.json();
-      setResult(response.ok ? "设置已保存并生效。" : "保存失败。", data);
-      if (response.ok) {
-        setSettingsFeedback("保存成功", "success", "服务端配置已更新，新的运行参数已经生效。", [
-          { label: "FNS Vault", value: data.settings?.fns_vault || "-" },
-          { label: "图片模式", value: data.settings?.image_mode === "s3_hotlink" ? "S3 图床外链" : "微信原链" },
-          { label: "临时目录清理", value: data.settings?.cleanup_temp_on_success ? "开启" : "关闭" },
-        ]);
-        await loadSettings();
-        return;
+      try {
+        const res = await fetch("/api/admin/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (res.ok) {
+          AdminUI.toast("设置已保存", "success");
+          AdminUI.setHtml("save-result-area", AdminUI.resultHtml({
+            title: "保存成功", tone: "success",
+            items: [
+              { label: "FNS Vault", value: data.settings?.fns_vault || "-" },
+              { label: "图片模式", value: data.settings?.image_mode === "s3_hotlink" ? "S3 图床外链" : "微信原链" },
+            ],
+            json: data,
+          }));
+          await loadSettings();
+        } else {
+          AdminUI.toast("保存失败", "error");
+          AdminUI.setHtml("save-result-area", AdminUI.resultHtml({
+            title: "保存失败", tone: "error",
+            description: data.detail || "请检查表单内容",
+            json: data,
+          }));
+        }
+      } catch (err) { AdminUI.toast("网络错误", "error"); }
+      finally { btn.disabled = false; btn.textContent = "保存并生效"; }
+    });
+
+    /* ── Change Password ── */
+    document.getElementById("change-pw-btn").addEventListener("click", async () => {
+      const btn = document.getElementById("change-pw-btn");
+      btn.disabled = true;
+      try {
+        const res = await fetch("/api/admin/password", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            current_password: document.getElementById("current-password").value,
+            new_password: document.getElementById("new-password").value,
+          }),
+        });
+        const data = await res.json();
+        if (res.ok) {
+          AdminUI.toast("密码已更新", "success");
+          document.getElementById("current-password").value = "";
+          document.getElementById("new-password").value = "";
+          AdminUI.setHtml("pw-result-area", AdminUI.resultHtml({ title: "密码修改成功", tone: "success", json: data }));
+        } else {
+          AdminUI.toast("修改失败", "error");
+          AdminUI.setHtml("pw-result-area", AdminUI.resultHtml({ title: "修改失败", tone: "error", description: data.detail, json: data }));
+        }
+      } catch (err) { AdminUI.toast("网络错误", "error"); }
+      finally { btn.disabled = false; }
+    });
+
+    /* ── Load Settings ── */
+    async function loadSettings() {
+      try {
+        const res = await fetch("/api/admin/settings");
+        const data = await res.json();
+        document.getElementById("fns-base-url").value = data.fns_base_url || "";
+        document.getElementById("fns-vault").value = data.fns_vault || "";
+        document.getElementById("fns-target-dir").value = data.fns_target_dir || "";
+        document.getElementById("fns-token").value = "";
+        document.getElementById("fns-token-meta").textContent = data.fns_token_configured ? `已配置：${data.fns_token_masked}` : "未配置";
+        document.getElementById("cleanup-on-success").checked = Boolean(data.cleanup_temp_on_success);
+
+        document.getElementById(data.image_mode === "s3_hotlink" ? "image-mode-s3" : "image-mode-wechat").checked = true;
+        document.getElementById("s3-endpoint").value = data.image_storage_endpoint || "";
+        document.getElementById("s3-region").value = data.image_storage_region || "";
+        document.getElementById("s3-bucket").value = data.image_storage_bucket || "";
+        document.getElementById("s3-access-key").value = data.image_storage_access_key_id || "";
+        document.getElementById("s3-secret-key").value = "";
+        document.getElementById("s3-path-tpl").value = data.image_storage_path_template || "";
+        document.getElementById("s3-public-url").value = data.image_storage_public_base_url || "";
+        document.getElementById("s3-secret-meta").textContent = data.image_storage_secret_access_key_configured
+          ? `已配置：${data.image_storage_secret_access_key_masked}` : "未配置";
+
+        AdminUI.setText("current-user", data.current_user?.username || "-");
+        clearFields.clear();
+        syncS3Panel();
+        validateAll();
+      } catch (err) {
+        AdminUI.toast("设置读取失败", "error");
       }
-      setSettingsFeedback("保存失败", "error", data.detail || "请检查表单内容后重试。");
-    });
+    }
 
-    document.getElementById("change-password-button").addEventListener("click", async () => {
-      const response = await fetch("/api/admin/password", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          current_password: document.getElementById("current-password").value,
-          new_password: document.getElementById("new-password").value,
-        }),
-      });
-      const data = await response.json();
-      setResult(response.ok ? "密码已更新。" : "密码更新失败。", data);
-      if (response.ok) {
-        setSettingsFeedback("密码已更新", "success", "管理员密码修改成功，当前会话已同步刷新。");
-        document.getElementById("current-password").value = "";
-        document.getElementById("new-password").value = "";
-        return;
-      }
-      setSettingsFeedback("密码更新失败", "error", data.detail || "请检查当前密码和新密码。");
-    });
-
-    document.getElementById("check-fns-button").addEventListener("click", () => {
-      checkFnsStatus().catch((error) => setFnsFeedback("检测失败", "error", String(error)));
-    });
-
-    ["fns-base-url", "fns-vault", "fns-target-dir", "fns-token", ...s3FieldIds].forEach((id) => {
-      document.getElementById(id).addEventListener("input", () => {
-        clearFields.delete(id.replace(/-/g, "_"));
-        validateForm();
-      });
-    });
-
-    document.querySelectorAll('input[name="image-mode"]').forEach((node) => {
-      node.addEventListener("change", syncImageModeUI);
-    });
-
-    document.getElementById("logout-button").addEventListener("click", async () => {
+    /* ── Logout ── */
+    document.getElementById("logout-btn").addEventListener("click", async () => {
       await fetch("/api/session", { method: "DELETE" });
       window.location.href = "/login";
     });
 
-    loadSettings().catch((error) => {
-      setSettingsFeedback("设置读取失败", "error", String(error));
-      setResult(String(error));
-    });
+    /* ── Init ── */
+    loadSettings();
   </script>
 </body>
 </html>

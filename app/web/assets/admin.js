@@ -1,63 +1,5 @@
 (function () {
-  const THEME_STORAGE_KEY = "wechat-md-theme";
-
-  function getStoredTheme() {
-    try {
-      return localStorage.getItem(THEME_STORAGE_KEY) || "system";
-    } catch (_) {
-      return "system";
-    }
-  }
-
-  function resolveTheme(theme) {
-    if (theme === "light" || theme === "dark") {
-      return theme;
-    }
-    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-  }
-
-  function applyTheme(theme, persist) {
-    const selected = theme || "system";
-    document.documentElement.dataset.theme = resolveTheme(selected);
-    document.documentElement.dataset.themeMode = selected;
-    if (persist) {
-      try {
-        localStorage.setItem(THEME_STORAGE_KEY, selected);
-      } catch (_) {
-        // ignore storage errors
-      }
-    }
-  }
-
-  function initThemeControls() {
-    const selects = Array.from(document.querySelectorAll("[data-theme-select]"));
-    const storedTheme = getStoredTheme();
-    applyTheme(storedTheme, false);
-    selects.forEach((select) => {
-      select.value = storedTheme;
-      select.addEventListener("change", (event) => {
-        applyTheme(event.target.value, true);
-        selects.forEach((other) => {
-          if (other !== event.target) {
-            other.value = event.target.value;
-          }
-        });
-      });
-    });
-
-    const media = window.matchMedia("(prefers-color-scheme: dark)");
-    const syncSystemTheme = () => {
-      if (getStoredTheme() === "system") {
-        applyTheme("system", false);
-      }
-    };
-    if (typeof media.addEventListener === "function") {
-      media.addEventListener("change", syncSystemTheme);
-    } else if (typeof media.addListener === "function") {
-      media.addListener(syncSystemTheme);
-    }
-  }
-
+  /* ── HTML Escape ── */
   function escapeHtml(value) {
     return String(value ?? "")
       .replace(/&/g, "&amp;")
@@ -71,63 +13,98 @@
     return JSON.stringify(value ?? {}, null, 2);
   }
 
-  function badge(label, tone) {
-    return `<span class="status-badge ${escapeHtml(tone || "info")}">${escapeHtml(label || "-")}</span>`;
+  /* ── Toast System ── */
+  let toastContainer = null;
+  function ensureToastContainer() {
+    if (!toastContainer) {
+      toastContainer = document.createElement("div");
+      toastContainer.className = "toast-container";
+      document.body.appendChild(toastContainer);
+    }
+    return toastContainer;
   }
 
-  function summaryItems(items) {
-    return items
+  function toast(message, tone, duration) {
+    const container = ensureToastContainer();
+    const el = document.createElement("div");
+    el.className = `toast ${tone || "info"}`;
+    el.textContent = message;
+    container.appendChild(el);
+    setTimeout(() => {
+      el.classList.add("fade-out");
+      setTimeout(() => el.remove(), 180);
+    }, duration || 3500);
+  }
+
+  /* ── Result Panel Builder ── */
+  function resultHtml(options) {
+    const tone = options.tone || "info";
+    const title = escapeHtml(options.title || "");
+    const desc = options.description ? `<p class="result-desc">${escapeHtml(options.description)}</p>` : "";
+    const items = (options.items || [])
       .map(
-        (item) => `
-          <div class="summary-item">
-            <span>${escapeHtml(item.label)}</span>
-            <div>${escapeHtml(item.value ?? "-")}</div>
-          </div>
-        `
+        (item) =>
+          `<div class="result-item"><span class="label">${escapeHtml(item.label)}</span><span class="value">${escapeHtml(item.value ?? "-")}</span></div>`
       )
       .join("");
+    const json = options.json
+      ? `<details class="json-viewer"><summary>原始 JSON</summary><pre>${escapeHtml(typeof options.json === "string" ? options.json : prettyJson(options.json))}</pre></details>`
+      : "";
+    return `<div class="result-block ${tone}"><p class="result-title">${title}</p>${desc}<div class="result-items">${items}</div>${json}</div>`;
   }
 
-  function resultPanel(options) {
-    const title = options?.title || "状态";
-    const tone = options?.tone || "info";
-    const statusText = options?.statusText || "待处理";
-    const description = options?.description ? `<p class="helper-text">${escapeHtml(options.description)}</p>` : "";
-    const items = summaryItems(options?.items || []);
-    return `
-      <div class="result-summary">
-        <div class="summary-title-row">
-          <strong>${escapeHtml(title)}</strong>
-          ${badge(statusText, tone)}
-        </div>
-        ${description}
-        <div class="summary-grid">${items}</div>
-      </div>
-    `;
-  }
-
+  /* ── DOM Helpers ── */
   function setHtml(id, html) {
-    const element = document.getElementById(id);
-    if (element) {
-      element.innerHTML = html;
-    }
+    const el = document.getElementById(id);
+    if (el) el.innerHTML = html;
   }
 
   function setText(id, text) {
-    const element = document.getElementById(id);
-    if (element) {
-      element.textContent = text;
-    }
+    const el = document.getElementById(id);
+    if (el) el.textContent = text;
   }
 
+  /* ── Advanced Toggle ── */
+  function initAdvancedToggles() {
+    document.querySelectorAll("[data-toggle-advanced]").forEach((btn) => {
+      const targetId = btn.getAttribute("data-toggle-advanced");
+      const panel = document.getElementById(targetId);
+      if (!panel) return;
+      btn.addEventListener("click", () => {
+        const expanded = btn.getAttribute("aria-expanded") === "true";
+        btn.setAttribute("aria-expanded", String(!expanded));
+        panel.classList.toggle("open", !expanded);
+      });
+    });
+  }
+
+  /* ── Tab System ── */
+  function initTabs() {
+    document.querySelectorAll("[data-tab-group]").forEach((nav) => {
+      const group = nav.getAttribute("data-tab-group");
+      const buttons = nav.querySelectorAll(".tab-btn");
+      buttons.forEach((btn) => {
+        btn.addEventListener("click", () => {
+          buttons.forEach((b) => b.classList.remove("active"));
+          btn.classList.add("active");
+          const target = btn.getAttribute("data-tab");
+          document.querySelectorAll(`[data-tab-panel="${group}"]`).forEach((panel) => {
+            panel.classList.toggle("active", panel.getAttribute("data-tab-id") === target);
+          });
+        });
+      });
+    });
+  }
+
+  /* ── Export ── */
   window.AdminUI = {
-    initThemeControls,
     escapeHtml,
     prettyJson,
-    badge,
-    summaryItems,
-    resultPanel,
+    toast,
+    resultHtml,
     setHtml,
     setText,
+    initAdvancedToggles,
+    initTabs,
   };
 })();
