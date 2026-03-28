@@ -173,6 +173,26 @@ def update_password(current_password: str, new_password: str) -> dict[str, Any]:
     return current
 
 
+def reset_admin_credentials(new_password: str, username: str | None = None) -> dict[str, Any]:
+    normalized_password = (new_password or "").strip()
+    if not normalized_password:
+        raise ValueError("新密码不能为空")
+
+    config_path = get_runtime_config_path()
+    current = load_runtime_config(config_path)
+    auth_user = current["auth"]["user"]
+    if username is not None:
+        normalized_username = username.strip()
+        if not normalized_username:
+            raise ValueError("用户名不能为空")
+        auth_user["username"] = normalized_username
+    auth_user["password_hash"] = hash_password(normalized_password)
+    current["auth"]["user"] = auth_user
+    current["auth"]["session_secret"] = generate_session_secret()
+    _write_runtime_config(config_path, current)
+    return current
+
+
 def build_admin_settings_payload() -> dict[str, Any]:
     settings = get_settings()
     runtime_values = load_runtime_config(settings.runtime_config_path)

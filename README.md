@@ -8,14 +8,14 @@ Local FastAPI service for converting WeChat public articles into Markdown and sy
 python -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-uvicorn app.main:app --host 127.0.0.1 --port 8765
+uvicorn app.main:app --host 0.0.0.0 --port 8765
 ```
 
-Open `http://127.0.0.1:8765`.
+Open `http://127.0.0.1:8765` or `http://<your-lan-ip>:8765`.
 
-- Main page: `http://127.0.0.1:8765/`
+- Main page: `http://127.0.0.1:8765/` or `http://<your-lan-ip>:8765/`
 - Login: built-in single account
-- Settings page: `http://127.0.0.1:8765/settings`
+- Settings page: `http://127.0.0.1:8765/settings` or `http://<your-lan-ip>:8765/settings`
 
 ## Required Environment
 
@@ -83,6 +83,31 @@ Optional environment variables:
 - Secret fields are masked on reload and never returned in plaintext from the settings API.
 - S3 image settings are entered manually in the settings page. There is no Obsidian plugin or R2 config file dependency.
 
+## Reset Admin Password
+
+If `.env` has changed but an existing `runtime-config.json` already contains an admin password hash, use the offline reset command instead of expecting `.env` to overwrite it automatically.
+
+Python CLI:
+
+```powershell
+python -m app.cli.reset_admin_password --password "new-secret"
+python -m app.cli.reset_admin_password --random
+python -m app.cli.reset_admin_password --username admin --password "new-secret"
+```
+
+PowerShell wrapper:
+
+```powershell
+.\scripts\reset-admin-password.ps1 -Password "new-secret"
+.\scripts\reset-admin-password.ps1 -Random
+```
+
+Notes:
+
+- The command requires the correct `WECHAT_MD_APP_MASTER_KEY`.
+- Resetting the password also rotates `session_secret`, so existing login sessions are invalidated.
+- The command only updates admin credentials. It does not change FNS or S3 settings.
+
 ## VPS Deployment
 
 Recommended layout:
@@ -109,7 +134,7 @@ Recommended deployment steps:
 Recommended reverse-proxy boundary:
 
 - Expose only the web service entrypoint.
-- Keep the app itself listening on `127.0.0.1`.
+- The app can listen on `0.0.0.0`; restrict exposure at the host firewall or proxy layer as needed.
 - Let the reverse proxy terminate HTTPS.
 - Prefer adding HSTS and host restrictions at the proxy layer.
 

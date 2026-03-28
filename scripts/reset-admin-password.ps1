@@ -1,3 +1,9 @@
+param(
+  [string]$Username,
+  [string]$Password,
+  [switch]$Random
+)
+
 $ErrorActionPreference = "Stop"
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
@@ -21,6 +27,16 @@ if (Test-Path $envFile) {
   }
 }
 
-Set-Location $projectRoot
+$arguments = @("-m", "app.cli.reset_admin_password")
+if ($Username) {
+  $arguments += @("--username", $Username)
+}
+if ($Password) {
+  $arguments += @("--password", $Password)
+}
+if ($Random) {
+  $arguments += "--random"
+}
 
-& $python -m uvicorn app.main:app --host 0.0.0.0 --port 8765
+Set-Location $projectRoot
+& $python @arguments
