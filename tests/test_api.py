@@ -176,6 +176,9 @@ class ApiTests(unittest.TestCase):
         self.assertIn('id="fns-status-result"', text)
         self.assertIn("当前登录用户", text)
         self.assertIn("修改密码", text)
+        self.assertIn("图片外链设置", text)
+        self.assertIn("微信原链", text)
+        self.assertIn("S3 图床外链", text)
 
     def test_settings_requires_login_redirect(self):
         response = self.client.get("/settings", follow_redirects=False)
@@ -192,6 +195,14 @@ class ApiTests(unittest.TestCase):
                 "fns_token": "fns-secret-token",
                 "fns_vault": "MainVault",
                 "fns_target_dir": "00_Inbox/微信公众号",
+                "image_mode": "s3_hotlink",
+                "image_storage_endpoint": "https://s3.example.com",
+                "image_storage_region": "auto",
+                "image_storage_bucket": "bucket-a",
+                "image_storage_access_key_id": "key-1",
+                "image_storage_secret_access_key": "secret-1",
+                "image_storage_path_template": "wechat/{year}/{filename}",
+                "image_storage_public_base_url": "https://img.example.com",
             },
         )
         response = self.client.get("/api/admin/settings")
@@ -201,7 +212,11 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(data["fns_base_url"], "https://fns.example.com")
         self.assertEqual(data["current_user"]["username"], "admin")
         self.assertTrue(data["fns_token_configured"])
+        self.assertEqual(data["image_mode"], "s3_hotlink")
+        self.assertEqual(data["image_storage_endpoint"], "https://s3.example.com")
+        self.assertTrue(data["image_storage_secret_access_key_configured"])
         self.assertNotIn("fns-secret-token", str(data))
+        self.assertNotIn("secret-1", str(data))
         self.assertNotIn("access_token_configured", data)
 
     def test_admin_settings_put_updates_runtime_config_and_config_endpoint(self):
@@ -213,6 +228,14 @@ class ApiTests(unittest.TestCase):
                 "fns_token": "new-fns-token",
                 "fns_vault": "obsidian",
                 "fns_target_dir": "00_Inbox/微信公众号",
+                "image_mode": "s3_hotlink",
+                "image_storage_endpoint": "https://s3.example.com",
+                "image_storage_region": "auto",
+                "image_storage_bucket": "bucket-a",
+                "image_storage_access_key_id": "key-1",
+                "image_storage_secret_access_key": "secret-1",
+                "image_storage_path_template": "wechat/{year}/{filename}",
+                "image_storage_public_base_url": "https://img.example.com",
             },
         )
         config_response = self.client.get("/api/config")
@@ -224,9 +247,25 @@ class ApiTests(unittest.TestCase):
         self.assertIn("\"user_settings\"", saved_text)
         self.assertIn("https://obsync.example.com", saved_text)
         self.assertIn("new-fns-token", saved_text)
+        self.assertIn("\"image_storage\"", saved_text)
+        self.assertIn("\"image_mode\": \"s3_hotlink\"", saved_text)
         config_data = config_response.json()
         self.assertTrue(config_data["fns_enabled"])
         self.assertEqual(config_data["fns_base_url"], "https://obsync.example.com")
+        self.assertEqual(config_data["image_mode"], "s3_hotlink")
+        self.assertEqual(config_data["image_public_base_url"], "https://img.example.com")
+
+    def test_admin_settings_accepts_wechat_hotlink_without_storage_fields(self):
+        self._login()
+        response = self.client.put(
+            "/api/admin/settings",
+            json={"image_mode": "wechat_hotlink"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()["settings"]
+        self.assertEqual(data["image_mode"], "wechat_hotlink")
+        self.assertFalse(data["image_storage_enabled"])
 
     def test_admin_fns_status_returns_connection_summary(self):
         self._login()

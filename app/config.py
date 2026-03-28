@@ -12,12 +12,13 @@ from app.auth import generate_session_secret, hash_password
 DEFAULT_USERNAME = "admin"
 DEFAULT_PASSWORD = "admin"
 DEFAULT_FNS_TARGET_DIR = "00_Inbox/微信公众号"
+DEFAULT_IMAGE_MODE = "wechat_hotlink"
+IMAGE_MODE_VALUES = {"wechat_hotlink", "s3_hotlink"}
 
 
 @dataclass(frozen=True)
 class Settings:
     default_output_dir: Path
-    default_r2_config_path: Path
     runtime_config_path: Path
     username: str
     password_hash: str
@@ -28,10 +29,34 @@ class Settings:
     fns_vault: str | None = None
     fns_target_dir: str = DEFAULT_FNS_TARGET_DIR
     cleanup_temp_on_success: bool = True
+    image_mode: str = DEFAULT_IMAGE_MODE
+    image_storage_provider: str | None = None
+    image_storage_endpoint: str | None = None
+    image_storage_region: str | None = None
+    image_storage_bucket: str | None = None
+    image_storage_access_key_id: str | None = None
+    image_storage_secret_access_key: str | None = None
+    image_storage_path_template: str | None = None
+    image_storage_public_base_url: str | None = None
 
     @property
     def fns_enabled(self) -> bool:
         return bool(self.fns_base_url and self.fns_token and self.fns_vault)
+
+    @property
+    def image_storage_enabled(self) -> bool:
+        return self.image_mode == "s3_hotlink" and all(
+            [
+                self.image_storage_provider == "s3",
+                self.image_storage_endpoint,
+                self.image_storage_region,
+                self.image_storage_bucket,
+                self.image_storage_access_key_id,
+                self.image_storage_secret_access_key,
+                self.image_storage_path_template,
+                self.image_storage_public_base_url,
+            ]
+        )
 
 
 FNS_FIELDS = {
@@ -41,7 +66,17 @@ FNS_FIELDS = {
     "fns_target_dir",
     "cleanup_temp_on_success",
 }
-SECRET_FIELDS = {"fns_token"}
+IMAGE_STORAGE_TEXT_FIELDS = {
+    "image_storage_provider",
+    "image_storage_endpoint",
+    "image_storage_region",
+    "image_storage_bucket",
+    "image_storage_access_key_id",
+    "image_storage_secret_access_key",
+    "image_storage_path_template",
+    "image_storage_public_base_url",
+}
+SECRET_FIELDS = {"fns_token", "image_storage_secret_access_key"}
 
 
 def get_runtime_config_path() -> Path:
@@ -76,11 +111,15 @@ def save_runtime_config(payload: dict[str, Any], clear_fields: list[str] | None 
     config_path = get_runtime_config_path()
     current = load_runtime_config(config_path)
     updated = _normalize_runtime_config(current)
-    clear_set = {field for field in (clear_fields or []) if field in SECRET_FIELDS}
     user_settings = dict(updated["user_settings"])
+    image_storage = dict(user_settings["image_storage"])
+    clear_set = {field for field in (clear_fields or []) if field in SECRET_FIELDS}
 
     for field in clear_set:
-        user_settings[field] = ""
+        if field == "fns_token":
+            user_settings["fns_token"] = ""
+        elif field == "image_storage_secret_access_key":
+            image_storage["secret_access_key"] = ""
 
     for field in FNS_FIELDS:
         if field not in payload:
@@ -92,12 +131,22 @@ def save_runtime_config(payload: dict[str, Any], clear_fields: list[str] | None 
         if raw_value is None:
             continue
         value = str(raw_value).strip()
-        if field in SECRET_FIELDS:
-            if value:
-                user_settings[field] = value
-            continue
         user_settings[field] = value
 
+    if "image_mode" in payload and payload.get("image_mode") is not None:
+        user_settings["image_mode"] = str(payload.get("image_mode") or "").strip() or DEFAULT_IMAGE_MODE
+
+    for field in IMAGE_STORAGE_TEXT_FIELDS:
+        if field not in payload:
+            continue
+        raw_value = payload.get(field)
+        if raw_value is None:
+            continue
+        value = str(raw_value).strip()
+        target_key = field.removeprefix("image_storage_")
+        image_storage[target_key] = value
+
+    user_settings["image_storage"] = image_storage
     updated["user_settings"] = _normalize_user_settings(user_settings)
     _validate_runtime_config(updated)
     config_path.write_text(
@@ -130,11 +179,18 @@ def update_password(current_password: str, new_password: str) -> dict[str, Any]:
 def build_admin_settings_payload() -> dict[str, Any]:
     settings = get_settings()
     runtime_values = load_runtime_config(settings.runtime_config_path)
+    user_settings = runtime_values["user_settings"]
+    image_storage = user_settings["image_storage"]
     runtime_overrides = [
         "auth.user.username",
         "auth.user.password_hash",
         "auth.session_secret",
-        *[f"user_settings.{key}" for key in sorted(runtime_values["user_settings"].keys())],
+        *[
+            f"user_settings.{key}"
+            for key in sorted(user_settings.keys())
+            if key != "image_storage"
+        ],
+        *[f"user_settings.image_storage.{key}" for key in sorted(image_storage.keys())],
     ]
     return {
         "runtime_config_path": str(settings.runtime_config_path),
@@ -147,6 +203,17 @@ def build_admin_settings_payload() -> dict[str, Any]:
         "fns_token_configured": bool(settings.fns_token),
         "fns_token_masked": _mask_secret(settings.fns_token),
         "cleanup_temp_on_success": settings.cleanup_temp_on_success,
+        "image_mode": settings.image_mode,
+        "image_storage_enabled": settings.image_storage_enabled,
+        "image_storage_provider": settings.image_storage_provider or "s3",
+        "image_storage_endpoint": settings.image_storage_endpoint or "",
+        "image_storage_region": settings.image_storage_region or "",
+        "image_storage_bucket": settings.image_storage_bucket or "",
+        "image_storage_access_key_id": settings.image_storage_access_key_id or "",
+        "image_storage_path_template": settings.image_storage_path_template or "",
+        "image_storage_public_base_url": settings.image_storage_public_base_url or "",
+        "image_storage_secret_access_key_configured": bool(settings.image_storage_secret_access_key),
+        "image_storage_secret_access_key_masked": _mask_secret(settings.image_storage_secret_access_key),
         "runtime_overrides": runtime_overrides,
     }
 
@@ -157,15 +224,10 @@ def get_settings() -> Settings:
     auth_block = runtime_values["auth"]
     user_block = auth_block["user"]
     runtime_user_settings = runtime_values["user_settings"]
+    image_storage = runtime_user_settings["image_storage"]
 
     output_dir = Path(
         os.environ.get("WECHAT_MD_DEFAULT_OUTPUT_DIR", r"D:\obsidian\00_Inbox")
-    ).resolve()
-    r2_config_path = Path(
-        os.environ.get(
-            "WECHAT_MD_R2_CONFIG_PATH",
-            r"D:\obsidian\.obsidian\plugins\image-upload-toolkit\data.json",
-        )
     ).resolve()
     fns_base_url = (
         str(runtime_user_settings.get("fns_base_url") or os.environ.get("WECHAT_MD_FNS_BASE_URL") or "").strip() or None
@@ -184,9 +246,28 @@ def get_settings() -> Settings:
         runtime_user_settings.get("cleanup_temp_on_success"),
         default=True,
     )
+    image_mode = str(runtime_user_settings.get("image_mode") or os.environ.get("WECHAT_MD_IMAGE_MODE") or DEFAULT_IMAGE_MODE).strip()
+    image_mode = image_mode if image_mode in IMAGE_MODE_VALUES else DEFAULT_IMAGE_MODE
+
+    provider = str(image_storage.get("provider") or os.environ.get("WECHAT_MD_IMAGE_STORAGE_PROVIDER") or "s3").strip() or "s3"
+    endpoint = str(image_storage.get("endpoint") or os.environ.get("WECHAT_MD_IMAGE_STORAGE_ENDPOINT") or "").strip() or None
+    region = str(image_storage.get("region") or os.environ.get("WECHAT_MD_IMAGE_STORAGE_REGION") or "").strip() or None
+    bucket = str(image_storage.get("bucket") or os.environ.get("WECHAT_MD_IMAGE_STORAGE_BUCKET") or "").strip() or None
+    access_key_id = str(
+        image_storage.get("access_key_id") or os.environ.get("WECHAT_MD_IMAGE_STORAGE_ACCESS_KEY_ID") or ""
+    ).strip() or None
+    secret_access_key = str(
+        image_storage.get("secret_access_key") or os.environ.get("WECHAT_MD_IMAGE_STORAGE_SECRET_ACCESS_KEY") or ""
+    ).strip() or None
+    path_template = str(
+        image_storage.get("path_template") or os.environ.get("WECHAT_MD_IMAGE_STORAGE_PATH_TEMPLATE") or ""
+    ).strip() or None
+    public_base_url = str(
+        image_storage.get("public_base_url") or os.environ.get("WECHAT_MD_IMAGE_STORAGE_PUBLIC_BASE_URL") or ""
+    ).strip() or None
+
     return Settings(
         default_output_dir=output_dir,
-        default_r2_config_path=r2_config_path,
         runtime_config_path=runtime_config_path,
         username=str(user_block.get("username") or DEFAULT_USERNAME),
         password_hash=str(user_block.get("password_hash") or hash_password(DEFAULT_PASSWORD)),
@@ -196,6 +277,15 @@ def get_settings() -> Settings:
         fns_vault=fns_vault,
         fns_target_dir=fns_target_dir.strip("/\\"),
         cleanup_temp_on_success=cleanup_temp_on_success,
+        image_mode=image_mode,
+        image_storage_provider=provider,
+        image_storage_endpoint=endpoint.rstrip("/") if endpoint else None,
+        image_storage_region=region,
+        image_storage_bucket=bucket,
+        image_storage_access_key_id=access_key_id,
+        image_storage_secret_access_key=secret_access_key,
+        image_storage_path_template=path_template,
+        image_storage_public_base_url=public_base_url.rstrip("/") if public_base_url else None,
     )
 
 
@@ -235,13 +325,30 @@ def _normalize_runtime_config(raw_data: dict[str, Any]) -> dict[str, Any]:
 
 def _normalize_user_settings(raw_settings: Any) -> dict[str, Any]:
     source = raw_settings if isinstance(raw_settings, dict) else {}
+    image_storage_source = source.get("image_storage") if isinstance(source.get("image_storage"), dict) else {}
     return {
         "fns_base_url": str(source.get("fns_base_url") or "").strip(),
         "fns_token": str(source.get("fns_token") or "").strip(),
         "fns_vault": str(source.get("fns_vault") or "").strip(),
         "fns_target_dir": str(source.get("fns_target_dir") or DEFAULT_FNS_TARGET_DIR).strip() or DEFAULT_FNS_TARGET_DIR,
         "cleanup_temp_on_success": _as_bool(source.get("cleanup_temp_on_success"), default=True),
+        "image_mode": _normalize_image_mode(source.get("image_mode")),
+        "image_storage": {
+            "provider": str(image_storage_source.get("provider") or "s3").strip() or "s3",
+            "endpoint": str(image_storage_source.get("endpoint") or "").strip(),
+            "region": str(image_storage_source.get("region") or "").strip(),
+            "bucket": str(image_storage_source.get("bucket") or "").strip(),
+            "access_key_id": str(image_storage_source.get("access_key_id") or "").strip(),
+            "secret_access_key": str(image_storage_source.get("secret_access_key") or "").strip(),
+            "path_template": str(image_storage_source.get("path_template") or "").strip(),
+            "public_base_url": str(image_storage_source.get("public_base_url") or "").strip(),
+        },
     }
+
+
+def _normalize_image_mode(value: Any) -> str:
+    normalized = str(value or DEFAULT_IMAGE_MODE).strip()
+    return normalized if normalized in IMAGE_MODE_VALUES else DEFAULT_IMAGE_MODE
 
 
 def _mask_secret(value: str | None) -> str:
@@ -253,9 +360,33 @@ def _mask_secret(value: str | None) -> str:
 
 
 def _validate_runtime_config(data: dict[str, Any]) -> None:
-    base_url = str(data["user_settings"].get("fns_base_url") or "").strip()
+    user_settings = data["user_settings"]
+    base_url = str(user_settings.get("fns_base_url") or "").strip()
     if base_url and not base_url.startswith(("http://", "https://")):
         raise ValueError("FNS 基础地址必须以 http:// 或 https:// 开头")
+
+    image_mode = user_settings.get("image_mode")
+    if image_mode not in IMAGE_MODE_VALUES:
+        raise ValueError("图片模式仅支持 wechat_hotlink 或 s3_hotlink")
+    if image_mode != "s3_hotlink":
+        return
+
+    image_storage = user_settings["image_storage"]
+    required_fields = {
+        "endpoint": image_storage.get("endpoint"),
+        "region": image_storage.get("region"),
+        "bucket": image_storage.get("bucket"),
+        "access_key_id": image_storage.get("access_key_id"),
+        "secret_access_key": image_storage.get("secret_access_key"),
+        "path_template": image_storage.get("path_template"),
+        "public_base_url": image_storage.get("public_base_url"),
+    }
+    missing = [name for name, value in required_fields.items() if not str(value or "").strip()]
+    if missing:
+        raise ValueError("S3 图床配置不完整，缺少字段: " + ", ".join(missing))
+    for field_name in ("endpoint", "public_base_url"):
+        if not str(required_fields[field_name]).startswith(("http://", "https://")):
+            raise ValueError(f"S3 图床字段 {field_name} 必须以 http:// 或 https:// 开头")
 
 
 def _verify_current_password(password: str, stored_hash: str) -> bool:

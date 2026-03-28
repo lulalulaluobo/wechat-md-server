@@ -272,36 +272,51 @@ class MarkdownStructureTests(unittest.TestCase):
 
 
 class ImageUploadPipelineTests(unittest.TestCase):
-    def test_load_r2_upload_config_from_obsidian_plugin(self):
+    def test_load_s3_upload_config_from_environment(self):
         module = load_pipeline_module()
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            vault_dir = Path(temp_dir) / "vault"
-            output_dir = vault_dir / "00_Inbox" / "01_sample"
-            output_dir.mkdir(parents=True)
-            config_path = vault_dir / ".obsidian" / "plugins" / "image-upload-toolkit" / "data.json"
-            config_path.parent.mkdir(parents=True)
-            config_path.write_text(
-                json.dumps(
-                    {
-                        "r2Setting": {
-                            "accessKeyId": "key",
-                            "secretAccessKey": "secret",
-                            "endpoint": "https://example.r2.cloudflarestorage.com",
-                            "bucketName": "bucket",
-                            "path": "/i/{year}/{mon}/{day}/{filename}",
-                            "customDomainName": "https://img.example.com",
-                        }
-                    }
-                ),
-                encoding="utf-8",
-            )
+            with patch.dict(
+                os.environ,
+                {
+                    "WECHAT_MD_IMAGE_MODE": "s3_hotlink",
+                    "WECHAT_MD_IMAGE_STORAGE_ENDPOINT": "https://s3.example.com",
+                    "WECHAT_MD_IMAGE_STORAGE_REGION": "auto",
+                    "WECHAT_MD_IMAGE_STORAGE_BUCKET": "bucket-a",
+                    "WECHAT_MD_IMAGE_STORAGE_ACCESS_KEY_ID": "key-1",
+                    "WECHAT_MD_IMAGE_STORAGE_SECRET_ACCESS_KEY": "secret-1",
+                    "WECHAT_MD_IMAGE_STORAGE_PATH_TEMPLATE": "wechat/{year}/{filename}",
+                    "WECHAT_MD_IMAGE_STORAGE_PUBLIC_BASE_URL": "https://img.example.com",
+                },
+                clear=False,
+            ):
+                config = module.load_s3_upload_config()
 
-            with patch.dict(os.environ, {"WECHAT_MD_R2_CONFIG_PATH": str(config_path)}, clear=False):
-                config = module.load_r2_upload_config(output_dir)
+        self.assertEqual(config.bucket_name, "bucket-a")
+        self.assertEqual(config.public_base_url, "https://img.example.com")
+        self.assertEqual(config.region, "auto")
 
-        self.assertEqual(config.bucket_name, "bucket")
-        self.assertEqual(config.custom_domain_name, "https://img.example.com")
+    def test_markdown_image_downloader_keeps_wechat_source_urls_in_wechat_mode(self):
+        module = load_pipeline_module()
+
+        class NeverCalledSession:
+            def get(self, url, headers=None, timeout=None):
+                raise AssertionError("wechat_hotlink should not download images")
+
+        downloader = module.MarkdownImageDownloader(
+            output_dir=Path(tempfile.gettempdir()),
+            base_url=None,
+            timeout=30,
+            image_mode="wechat_hotlink",
+            http_session=NeverCalledSession(),
+        )
+
+        target = downloader.download("https://mmbiz.qpic.cn/test/640?wx_fmt=png&from=appmsg#imgIndex=0")
+        summary = downloader.get_summary()
+
+        self.assertEqual(target, "https://mmbiz.qpic.cn/test/640?wx_fmt=png&from=appmsg")
+        self.assertEqual(summary.get("uploaded_images"), 0)
+        self.assertEqual(summary.get("wechat_hotlink_images"), 1)
 
     def test_markdown_image_downloader_compresses_and_uploads_static_images(self):
         module = load_pipeline_module()
@@ -346,6 +361,7 @@ class ImageUploadPipelineTests(unittest.TestCase):
                 output_dir=Path(temp_dir),
                 base_url=None,
                 timeout=30,
+                image_mode="s3_hotlink",
                 uploader=fake_uploader,
                 http_session=FakeSession(source_buffer.getvalue()),
             )
@@ -378,6 +394,7 @@ class ImageUploadPipelineTests(unittest.TestCase):
             output_dir=Path(tempfile.gettempdir()),
             base_url=None,
             timeout=30,
+            image_mode="s3_hotlink",
             uploader=NeverCalledUploader(),
         )
         source = "https://mmbiz.qpic.cn/test/640?wx_fmt=gif&from=appmsg#imgIndex=0"
@@ -421,6 +438,7 @@ class ImageUploadPipelineTests(unittest.TestCase):
             output_dir=Path(tempfile.gettempdir()),
             base_url=None,
             timeout=30,
+            image_mode="s3_hotlink",
             uploader=FailingUploader(),
             http_session=FakeSession(source_buffer.getvalue()),
         )
@@ -469,6 +487,7 @@ class ImageUploadPipelineTests(unittest.TestCase):
             output_dir=Path(tempfile.gettempdir()),
             base_url=None,
             timeout=30,
+            image_mode="s3_hotlink",
             uploader=fake_uploader,
             http_session=FakeSession(source_buffer.getvalue()),
         )

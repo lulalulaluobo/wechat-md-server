@@ -108,7 +108,15 @@ def normalize_output_dir(output_dir: str | None) -> Path:
 
 def ensure_runtime_environment() -> None:
     settings = get_settings()
-    os.environ["WECHAT_MD_R2_CONFIG_PATH"] = str(settings.default_r2_config_path)
+    os.environ["WECHAT_MD_IMAGE_MODE"] = settings.image_mode
+    os.environ["WECHAT_MD_IMAGE_STORAGE_PROVIDER"] = settings.image_storage_provider or "s3"
+    os.environ["WECHAT_MD_IMAGE_STORAGE_ENDPOINT"] = settings.image_storage_endpoint or ""
+    os.environ["WECHAT_MD_IMAGE_STORAGE_REGION"] = settings.image_storage_region or ""
+    os.environ["WECHAT_MD_IMAGE_STORAGE_BUCKET"] = settings.image_storage_bucket or ""
+    os.environ["WECHAT_MD_IMAGE_STORAGE_ACCESS_KEY_ID"] = settings.image_storage_access_key_id or ""
+    os.environ["WECHAT_MD_IMAGE_STORAGE_SECRET_ACCESS_KEY"] = settings.image_storage_secret_access_key or ""
+    os.environ["WECHAT_MD_IMAGE_STORAGE_PATH_TEMPLATE"] = settings.image_storage_path_template or ""
+    os.environ["WECHAT_MD_IMAGE_STORAGE_PUBLIC_BASE_URL"] = settings.image_storage_public_base_url or ""
 
 
 def parse_links(urls: list[str] | None = None, urls_text: str | None = None, file_text: str | None = None) -> list[str]:
@@ -144,12 +152,9 @@ def read_uploaded_text(content: bytes) -> str:
 
 def build_config_payload() -> dict[str, Any]:
     settings = get_settings()
-    r2_config_exists = settings.default_r2_config_path.exists()
     default_output_target = build_output_target(None, settings)
     return {
         "default_output_dir": str(settings.default_output_dir),
-        "default_r2_config_path": str(settings.default_r2_config_path),
-        "r2_config_exists": r2_config_exists,
         "service_mode": "hybrid" if settings.fns_enabled else "local_only",
         "default_output_target": default_output_target,
         "auth_enabled": True,
@@ -159,6 +164,11 @@ def build_config_payload() -> dict[str, Any]:
         "fns_target_dir": settings.fns_target_dir,
         "current_user": {"username": settings.username},
         "cleanup_temp_on_success": settings.cleanup_temp_on_success,
+        "image_mode": settings.image_mode,
+        "image_storage_enabled": settings.image_storage_enabled,
+        "image_public_base_url": settings.image_storage_public_base_url,
+        "image_storage_bucket": settings.image_storage_bucket,
+        "image_storage_path_template": settings.image_storage_path_template,
     }
 
 

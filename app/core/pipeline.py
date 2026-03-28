@@ -80,11 +80,11 @@ AUTHOR_INTRO_PATTERNS = [
     re.compile(r'^>?\s*我是.+(?:前|曾|现在|目前).*(?:副总裁|创始人|带队|死磕|专注)'),
 ]
 
-IMAGE_UPLOAD_CONFIG_RELATIVE_PATH = Path('.obsidian/plugins/image-upload-toolkit/data.json')
 STATIC_IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp'}
 PASSTHROUGH_IMAGE_EXTENSIONS = {'.gif', '.svg'}
 IMAGE_MAX_DIMENSION = 1600
 IMAGE_WEBP_QUALITY = 78
+DEFAULT_IMAGE_MODE = 'wechat_hotlink'
 
 
 @dataclass
@@ -97,13 +97,14 @@ class ArticleData:
 
 
 @dataclass
-class R2UploadConfig:
+class S3UploadConfig:
     access_key_id: str
     secret_access_key: str
     endpoint: str
+    region: str
     bucket_name: str
     path_template: str
-    custom_domain_name: str
+    public_base_url: str
 
 
 def sanitize_filename(name: str) -> str:
@@ -299,62 +300,31 @@ class WeChatArticlePipeline:
 '''
 
 
-def find_image_upload_config(start_path: Path) -> Path:
-    override_path = os.environ.get('WECHAT_MD_R2_CONFIG_PATH')
-    if override_path:
-        config_path = Path(override_path).resolve()
-        if config_path.exists():
-            return config_path
-        raise RuntimeError(f'未找到图床配置文件: {config_path}')
-
-    candidate_roots: List[Path] = []
-    for root in (start_path.resolve(), Path.cwd().resolve()):
-        candidate_roots.append(root)
-        candidate_roots.extend(root.parents)
-
-    seen: set[Path] = set()
-    for root in candidate_roots:
-        if root in seen:
-            continue
-        seen.add(root)
-        config_path = root / IMAGE_UPLOAD_CONFIG_RELATIVE_PATH
-        if config_path.exists():
-            return config_path
-
-    raise RuntimeError(
-        f'未找到图床配置文件: {IMAGE_UPLOAD_CONFIG_RELATIVE_PATH}。'
-        '请确认当前输出目录位于 Obsidian Vault 内，且 image-upload-toolkit 已配置 Cloudflare R2。'
-    )
-
-
-def load_r2_upload_config(start_path: Path) -> R2UploadConfig:
-    config_path = find_image_upload_config(start_path)
-    config_data = json.loads(config_path.read_text(encoding='utf-8'))
-    r2_setting = config_data.get('r2Setting') or {}
-    custom_domain_name = (r2_setting.get('customDomainName') or '').strip()
+def load_s3_upload_config() -> S3UploadConfig:
     required_fields = {
-        'accessKeyId': (r2_setting.get('accessKeyId') or '').strip(),
-        'secretAccessKey': (r2_setting.get('secretAccessKey') or '').strip(),
-        'endpoint': (r2_setting.get('endpoint') or '').strip(),
-        'bucketName': (r2_setting.get('bucketName') or '').strip(),
-        'path': (r2_setting.get('path') or '').strip(),
-        'customDomainName': custom_domain_name,
+        'access_key_id': (os.environ.get('WECHAT_MD_IMAGE_STORAGE_ACCESS_KEY_ID') or '').strip(),
+        'secret_access_key': (os.environ.get('WECHAT_MD_IMAGE_STORAGE_SECRET_ACCESS_KEY') or '').strip(),
+        'endpoint': (os.environ.get('WECHAT_MD_IMAGE_STORAGE_ENDPOINT') or '').strip(),
+        'region': (os.environ.get('WECHAT_MD_IMAGE_STORAGE_REGION') or '').strip(),
+        'bucket': (os.environ.get('WECHAT_MD_IMAGE_STORAGE_BUCKET') or '').strip(),
+        'path_template': (os.environ.get('WECHAT_MD_IMAGE_STORAGE_PATH_TEMPLATE') or '').strip(),
+        'public_base_url': (os.environ.get('WECHAT_MD_IMAGE_STORAGE_PUBLIC_BASE_URL') or '').strip(),
     }
     missing = [name for name, value in required_fields.items() if not value]
     if missing:
         raise RuntimeError(
-            'Cloudflare R2 配置不完整，缺少字段: '
+            'S3 图床配置不完整，缺少字段: '
             + ', '.join(missing)
-            + f'。配置文件: {config_path}'
         )
 
-    return R2UploadConfig(
-        access_key_id=required_fields['accessKeyId'],
-        secret_access_key=required_fields['secretAccessKey'],
-        endpoint=required_fields['endpoint'],
-        bucket_name=required_fields['bucketName'],
-        path_template=required_fields['path'],
-        custom_domain_name=custom_domain_name.rstrip('/'),
+    return S3UploadConfig(
+        access_key_id=required_fields['access_key_id'],
+        secret_access_key=required_fields['secret_access_key'],
+        endpoint=required_fields['endpoint'].rstrip('/'),
+        region=required_fields['region'],
+        bucket_name=required_fields['bucket'],
+        path_template=required_fields['path_template'],
+        public_base_url=required_fields['public_base_url'].rstrip('/'),
     )
 
 
@@ -381,10 +351,10 @@ def _format_bytes(size: int) -> str:
     return f'{size / 1024 / 1024:.2f} MB'
 
 
-class R2Uploader:
+class S3Uploader:
     def __init__(
         self,
-        config: R2UploadConfig,
+        config: S3UploadConfig,
         timeout: int,
         http_session: Optional[requests.Session] = None,
     ) -> None:
@@ -399,7 +369,7 @@ class R2Uploader:
         now = datetime.now(timezone.utc)
         object_key = self._build_object_key(filename, content, now)
         self._send_signed_request('PUT', object_key, content=content, content_type=content_type)
-        return f'{self.config.custom_domain_name}/{quote(object_key, safe="/")}'
+        return f'{self.config.public_base_url}/{quote(object_key, safe="/")}'
 
     def delete(self, remote_url: str) -> None:
         object_key = self._extract_object_key_from_remote_url(remote_url)
@@ -419,9 +389,9 @@ class R2Uploader:
         return path.lstrip('/')
 
     def _extract_object_key_from_remote_url(self, remote_url: str) -> str:
-        remote_prefix = f'{self.config.custom_domain_name}/'
+        remote_prefix = f'{self.config.public_base_url}/'
         if not remote_url.startswith(remote_prefix):
-            raise ValueError(f'URL 不属于当前 R2 域名: {remote_url}')
+            raise ValueError(f'URL 不属于当前图床域名: {remote_url}')
         return remote_url[len(remote_prefix):]
 
     def _send_signed_request(
@@ -463,7 +433,7 @@ class R2Uploader:
                 payload_hash,
             ]
         )
-        credential_scope = f'{date_stamp}/auto/s3/aws4_request'
+        credential_scope = f'{date_stamp}/{self.config.region}/s3/aws4_request'
         string_to_sign = '\n'.join(
             [
                 'AWS4-HMAC-SHA256',
@@ -472,7 +442,7 @@ class R2Uploader:
                 _sha256_hexdigest(canonical_request.encode('utf-8')),
             ]
         )
-        signing_key = _build_signing_key(self.config.secret_access_key, date_stamp, 'auto', 's3')
+        signing_key = _build_signing_key(self.config.secret_access_key, date_stamp, self.config.region, 's3')
         signature = hmac.new(signing_key, string_to_sign.encode('utf-8'), hashlib.sha256).hexdigest()
         headers['Authorization'] = (
             'AWS4-HMAC-SHA256 '
@@ -496,12 +466,14 @@ class MarkdownImageDownloader:
         output_dir: Path,
         base_url: Optional[str],
         timeout: int,
-        uploader: Optional[R2Uploader] = None,
+        image_mode: str = DEFAULT_IMAGE_MODE,
+        uploader: Optional[S3Uploader] = None,
         http_session: Optional[requests.Session] = None,
     ) -> None:
         self.output_dir = output_dir
         self.base_url = base_url
         self.timeout = timeout
+        self.image_mode = image_mode
         self.image_index = 0
         self.uploader = uploader
         self.http_session = http_session or requests.Session()
@@ -513,6 +485,7 @@ class MarkdownImageDownloader:
             'uploaded_images': 0,
             'gif_passthrough_images': 0,
             'fallback_original_url_images': 0,
+            'wechat_hotlink_images': 0,
             'deleted_unused_uploads': 0,
         }
         self.uploaded_urls: List[str] = []
@@ -526,6 +499,10 @@ class MarkdownImageDownloader:
             source = urljoin(self.base_url, source)
 
         self.image_index += 1
+        if self.image_mode == 'wechat_hotlink':
+            self.summary['wechat_hotlink_images'] = int(self.summary['wechat_hotlink_images']) + 1
+            return source
+
         extension = self._detect_extension(source)
         if extension in PASSTHROUGH_IMAGE_EXTENSIONS:
             if extension == '.gif':
@@ -587,10 +564,10 @@ class MarkdownImageDownloader:
             self.uploaded_urls.remove(uploaded_url)
             self.summary['deleted_unused_uploads'] = int(self.summary['deleted_unused_uploads']) + 1
 
-    def _get_uploader(self) -> R2Uploader:
+    def _get_uploader(self) -> S3Uploader:
         if self.uploader is None:
-            self.uploader = R2Uploader(
-                config=load_r2_upload_config(self.output_dir),
+            self.uploader = S3Uploader(
+                config=load_s3_upload_config(),
                 timeout=self.timeout,
                 http_session=self.http_session,
             )
@@ -1169,6 +1146,7 @@ def convert_article_to_markdown(
         output_dir=output_dir,
         base_url=article.original_url,
         timeout=timeout,
+        image_mode=(os.environ.get('WECHAT_MD_IMAGE_MODE') or DEFAULT_IMAGE_MODE).strip() or DEFAULT_IMAGE_MODE,
     )
     parser = HTMLToMarkdownParser(downloader)
 
@@ -1209,6 +1187,7 @@ def run_pipeline(url: str, output_base_dir: Path, save_html: bool, timeout: int)
         output_dir=output_dir,
         base_url=article.original_url,
         timeout=timeout,
+        image_mode=(os.environ.get('WECHAT_MD_IMAGE_MODE') or DEFAULT_IMAGE_MODE).strip() or DEFAULT_IMAGE_MODE,
     )
 
     raw_markdown, image_count, clean_article_html, image_summary = convert_article_to_markdown(
@@ -1268,9 +1247,10 @@ def print_summary(result: Dict[str, object]) -> None:
     image_summary = result.get('image_summary') or {}
     if isinstance(image_summary, dict) and image_summary:
         safe_print('\n图片处理摘要:')
-        safe_print(f"- 上传到 R2: {image_summary.get('uploaded_images', 0)} 张")
+        safe_print(f"- 上传到图床: {image_summary.get('uploaded_images', 0)} 张")
         safe_print(f"- GIF 保留原链接: {image_summary.get('gif_passthrough_images', 0)} 张")
         safe_print(f"- 回退原图链接: {image_summary.get('fallback_original_url_images', 0)} 张")
+        safe_print(f"- 微信原链保留: {image_summary.get('wechat_hotlink_images', 0)} 张")
         safe_print(f"- 删除未引用上传图: {image_summary.get('deleted_unused_uploads', 0)} 张")
         safe_print(
             f"- 原始总大小: {_format_bytes(int(image_summary.get('original_bytes', 0)))}"

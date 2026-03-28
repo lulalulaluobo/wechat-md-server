@@ -1,6 +1,6 @@
 # wechat-md-server
 
-Local FastAPI service for converting WeChat public articles into Markdown files in an Obsidian vault.
+Local FastAPI service for converting WeChat public articles into Markdown and syncing them to Fast Note Sync for Obsidian.
 
 ## Run
 
@@ -14,46 +14,55 @@ uvicorn app.main:app --host 127.0.0.1 --port 8765
 Open `http://127.0.0.1:8765`.
 
 - Main page: `http://127.0.0.1:8765/`
+- Login: use the built-in single account `admin / admin`
 - Settings page: `http://127.0.0.1:8765/settings`
 
 ## Defaults
 
-- Output directory: `D:\obsidian\00_Inbox`
-- R2 config path: `D:\obsidian\.obsidian\plugins\image-upload-toolkit\data.json`
 - FNS target directory: `00_Inbox/微信公众号`
+- Image mode: `wechat_hotlink`
 
 You can override these with environment variables:
 
 - `WECHAT_MD_DEFAULT_OUTPUT_DIR`
-- `WECHAT_MD_R2_CONFIG_PATH`
 - `WECHAT_MD_RUNTIME_CONFIG_PATH`
-- `WECHAT_MD_ACCESS_TOKEN`
 - `WECHAT_MD_FNS_BASE_URL`
 - `WECHAT_MD_FNS_TOKEN`
 - `WECHAT_MD_FNS_VAULT`
 - `WECHAT_MD_FNS_TARGET_DIR`
+- `WECHAT_MD_IMAGE_MODE`
+- `WECHAT_MD_IMAGE_STORAGE_PROVIDER`
+- `WECHAT_MD_IMAGE_STORAGE_ENDPOINT`
+- `WECHAT_MD_IMAGE_STORAGE_REGION`
+- `WECHAT_MD_IMAGE_STORAGE_BUCKET`
+- `WECHAT_MD_IMAGE_STORAGE_ACCESS_KEY_ID`
+- `WECHAT_MD_IMAGE_STORAGE_SECRET_ACCESS_KEY`
+- `WECHAT_MD_IMAGE_STORAGE_PATH_TEMPLATE`
+- `WECHAT_MD_IMAGE_STORAGE_PUBLIC_BASE_URL`
 
 Runtime settings edited from the web UI are stored in `data/runtime-config.json` by default.
 
-## v2 Output Modes
+## Current Behavior
 
-- Default behavior is `fns` when all `WECHAT_MD_FNS_*` values are configured.
-- Otherwise the service falls back to `local`.
-- `POST /api/convert` and `POST /api/batch` both accept `output_target` with `fns` or `local`.
-- When `WECHAT_MD_ACCESS_TOKEN` is set, API access requires either:
-  - `Authorization: Bearer <token>`
-  - or a login session created from the built-in `/api/session` page flow
+- The web UI is login-protected. The built-in account is `admin / admin`.
+- Converted notes are written to the currently configured Fast Note Sync target.
+- Temporary local work directories are internal implementation detail, not a user-facing output target.
+- Image handling is controlled globally from `/settings`:
+  - `wechat_hotlink`: keep original WeChat image URLs in Markdown
+  - `s3_hotlink`: upload static images to a generic S3-compatible object store and use `public_base_url/object_key`
+- In `s3_hotlink`, GIF and SVG keep the original WeChat image URLs.
 
 ## Settings UI
 
 - `/settings` provides a server-backed admin settings page.
-- The settings page now includes overview cards, FNS connection detection, and inline form validation hints.
+- The settings page includes overview cards, FNS connection detection, image mode selection, and inline form validation hints.
 - FNS config can be imported from clipboard or pasted JSON in this format:
   - `api`
   - `apiToken`
   - `vault`
 - Clipboard import only fills the form. Settings are not persisted until you click save.
 - Secret fields are masked on reload and never returned in plaintext from the settings API.
+- S3 image settings are entered manually in the settings page. There is no Obsidian plugin or R2 config file dependency.
 
 ## Development Notes
 

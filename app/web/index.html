@@ -167,6 +167,11 @@
         <strong id="current-user">-</strong>
         <span class="muted">单用户模式</span>
       </article>
+      <article class="metric">
+        <span class="muted">图片模式</span>
+        <strong id="image-mode-label">-</strong>
+        <span class="muted">微信原链或 S3 外链</span>
+      </article>
     </section>
 
     <div class="actions" style="margin: 0 0 18px;">
@@ -248,6 +253,7 @@
       document.getElementById("fns-vault").textContent = data.fns_vault || "未配置";
       document.getElementById("fns-target-dir").textContent = data.fns_target_dir || "未配置";
       document.getElementById("current-user").textContent = data.current_user?.username || "-";
+      document.getElementById("image-mode-label").textContent = data.image_mode === "s3_hotlink" ? "S3 图床外链" : "微信原链";
     }
 
     async function loadConfig() {

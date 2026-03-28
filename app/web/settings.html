@@ -29,13 +29,8 @@
         radial-gradient(circle at bottom left, rgba(40,89,67,.1), transparent 26%),
         var(--bg);
     }
-    main { max-width: 1040px; margin: 0 auto; padding: 40px 20px 56px; }
-    .toolbar {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 14px;
-    }
+    main { max-width: 1080px; margin: 0 auto; padding: 40px 20px 56px; }
+    .toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
     .nav { display: flex; gap: 10px; }
     .nav a, .toolbar button, .action-row button {
       text-decoration: none;
@@ -57,13 +52,15 @@
       border-radius: 18px;
       padding: 18px;
       box-shadow: 0 18px 50px rgba(46, 38, 26, .08);
+      margin-top: 16px;
     }
-    .overview-grid {
+    .overview-grid, .grid, .status-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-      gap: 14px;
-      margin: 20px 0 16px;
+      gap: 16px;
     }
+    .overview-grid { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); margin: 20px 0 16px; }
+    .grid { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+    .status-grid { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
     .metric {
       border-radius: 18px;
       padding: 16px;
@@ -71,16 +68,10 @@
       background: linear-gradient(180deg, rgba(255,253,248,.98), rgba(248,241,229,.88));
       box-shadow: 0 16px 38px rgba(54, 45, 32, .08);
     }
-    .metric strong {
-      display: block;
-      font-size: 24px;
-      margin-top: 6px;
-    }
+    .metric strong { display: block; font-size: 24px; margin-top: 6px; word-break: break-word; }
     .muted { color: var(--muted); }
-    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
-    .status-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; margin-top: 16px; }
     label { display: block; margin: 12px 0 6px; font-size: 14px; color: var(--muted); }
-    input, textarea {
+    input, textarea, select {
       width: 100%;
       font: inherit;
       border-radius: 12px;
@@ -89,49 +80,33 @@
       background: #fff;
     }
     textarea { min-height: 160px; resize: vertical; }
-    .field-hint {
-      margin-top: 6px;
-      min-height: 18px;
-      font-size: 12px;
-      color: var(--muted);
-    }
+    .field-hint { margin-top: 6px; min-height: 18px; font-size: 12px; color: var(--muted); }
     .field-hint.error { color: var(--warn); }
     .field-hint.success { color: #1e6a48; }
-    .input-invalid {
-      border-color: var(--warn);
-      background: var(--danger-soft);
-    }
+    .input-invalid { border-color: var(--warn); background: var(--danger-soft); }
     .changed { background: var(--changed); }
-    .action-row {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      margin-top: 14px;
-    }
+    .action-row { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
     .pill {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      border-radius: 999px;
-      padding: 6px 10px;
-      font-size: 12px;
-      font-weight: 600;
+      display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; padding: 6px 10px;
+      font-size: 12px; font-weight: 600;
     }
     .pill.success { background: var(--success-soft); color: #1e6a48; }
     .pill.warn { background: #fff4e4; color: #9a5a15; }
     .pill.error { background: var(--danger-soft); color: #9d3d2d; }
     .pill.info { background: var(--info-soft); color: #2e5fa8; }
     pre {
-      margin: 0;
-      padding: 14px;
-      border-radius: 14px;
-      background: #231f1a;
-      color: #f2eee7;
-      overflow: auto;
-      white-space: pre-wrap;
-      word-break: break-word;
-      min-height: 140px;
+      margin: 0; padding: 14px; border-radius: 14px; background: #231f1a; color: #f2eee7;
+      overflow: auto; white-space: pre-wrap; word-break: break-word; min-height: 140px;
     }
+    .mode-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; margin-top: 12px; }
+    .mode-card {
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 14px;
+      background: #fff;
+    }
+    .mode-card input { width: auto; margin-right: 8px; }
+    .hidden { display: none; }
   </style>
 </head>
 <body>
@@ -144,7 +119,7 @@
       <button id="logout-button">退出登录</button>
     </div>
     <h1>后台设置</h1>
-    <p class="lead">在这里维护 Fast Note Sync、当前登录用户配置，以及密码。剪贴板导入只负责填表，不会自动保存到服务端。</p>
+    <p class="lead">在这里维护 Fast Note Sync、图片外链策略和账号安全。剪贴板导入只负责填表，不会自动保存到服务端。</p>
 
     <section class="overview-grid">
       <article class="metric">
@@ -163,9 +138,9 @@
         <span class="muted">同步目标</span>
       </article>
       <article class="metric">
-        <span class="muted">运行时配置</span>
-        <strong id="metric-runtime">-</strong>
-        <span class="muted">覆盖字段数</span>
+        <span class="muted">图片模式</span>
+        <strong id="metric-image-mode">-</strong>
+        <span class="muted">原链或 S3 外链</span>
       </article>
     </section>
 
@@ -184,7 +159,7 @@
         <h2>FNS 连接状态</h2>
         <div class="pill info" id="fns-health-pill">待检测</div>
         <p class="muted" id="fns-health-message">尚未检测 FNS 连接。</p>
-        <div class="action-row" style="margin-top: 10px;">
+        <div class="action-row">
           <button id="check-fns-button" class="secondary">检测 FNS 连接</button>
         </div>
         <pre id="fns-status-result">等待检测</pre>
@@ -195,7 +170,7 @@
       </section>
     </div>
 
-    <section class="card" style="margin-top: 16px;">
+    <section class="card">
       <h2>服务配置</h2>
       <div class="grid">
         <div>
@@ -225,13 +200,72 @@
           <div class="field-hint success" id="hint-cleanup-temp-on-success">失败任务仍会默认清理临时目录。</div>
         </div>
       </div>
+    </section>
+
+    <section class="card">
+      <h2>图片外链设置</h2>
+      <div class="mode-grid">
+        <label class="mode-card">
+          <input type="radio" name="image-mode" id="image-mode-wechat" value="wechat_hotlink" />
+          <strong>微信原链</strong>
+          <div class="muted">不上传图片，Markdown 直接保留微信图片外链。</div>
+        </label>
+        <label class="mode-card">
+          <input type="radio" name="image-mode" id="image-mode-s3" value="s3_hotlink" />
+          <strong>S3 图床外链</strong>
+          <div class="muted">静态图压缩后上传到通用 S3 图床，GIF / SVG 保留微信原链。</div>
+        </label>
+      </div>
+
+      <div id="s3-settings-panel" class="hidden">
+        <div class="grid">
+          <div>
+            <label for="image-storage-endpoint">S3 Endpoint</label>
+            <input id="image-storage-endpoint" placeholder="https://s3.example.com" />
+            <div class="field-hint" id="hint-image-storage-endpoint"></div>
+          </div>
+          <div>
+            <label for="image-storage-region">Region</label>
+            <input id="image-storage-region" placeholder="auto" />
+            <div class="field-hint" id="hint-image-storage-region"></div>
+          </div>
+          <div>
+            <label for="image-storage-bucket">Bucket</label>
+            <input id="image-storage-bucket" placeholder="wechat-images" />
+            <div class="field-hint" id="hint-image-storage-bucket"></div>
+          </div>
+          <div>
+            <label for="image-storage-access-key-id">Access Key ID</label>
+            <input id="image-storage-access-key-id" placeholder="AKIA..." />
+            <div class="field-hint" id="hint-image-storage-access-key-id"></div>
+          </div>
+          <div>
+            <label for="image-storage-secret-access-key">Secret Access Key</label>
+            <input id="image-storage-secret-access-key" type="password" placeholder="留空则保持不变" />
+            <div class="muted" id="image-storage-secret-meta"></div>
+            <div class="field-hint" id="hint-image-storage-secret-access-key"></div>
+          </div>
+          <div>
+            <label for="image-storage-path-template">路径模板</label>
+            <input id="image-storage-path-template" placeholder="wechat/{year}/{filename}" />
+            <div class="field-hint" id="hint-image-storage-path-template"></div>
+          </div>
+          <div>
+            <label for="image-storage-public-base-url">公开访问域名</label>
+            <input id="image-storage-public-base-url" placeholder="https://img.example.com" />
+            <div class="field-hint" id="hint-image-storage-public-base-url"></div>
+          </div>
+        </div>
+      </div>
+
       <div class="action-row">
         <button id="clear-fns-token" class="warn">清空 FNS Token</button>
+        <button id="clear-image-storage-secret" class="warn">清空图床密钥</button>
         <button id="save-settings" class="secondary">保存并生效</button>
       </div>
     </section>
 
-    <section class="card" style="margin-top: 16px;">
+    <section class="card">
       <h2>账号安全</h2>
       <p class="muted">当前登录用户：<strong id="current-user-label">-</strong></p>
       <div class="grid">
@@ -253,22 +287,56 @@
     const resultEl = document.getElementById("settings-result");
     const fnsStatusEl = document.getElementById("fns-status-result");
     const clearFields = new Set();
+    const s3FieldIds = [
+      "image-storage-endpoint",
+      "image-storage-region",
+      "image-storage-bucket",
+      "image-storage-access-key-id",
+      "image-storage-secret-access-key",
+      "image-storage-path-template",
+      "image-storage-public-base-url"
+    ];
+
+    function getImageMode() {
+      return document.querySelector('input[name="image-mode"]:checked')?.value || "wechat_hotlink";
+    }
+
     const validators = {
-      "fns-base-url": (value) => {
-        if (!value) return { ok: false, text: "请输入 FNS 基础地址。" };
-        return /^https?:\/\//i.test(value)
-          ? { ok: true, text: "地址格式正确。" }
-          : { ok: false, text: "必须以 http:// 或 https:// 开头。" };
-      },
-      "fns-vault": (value) => value ? { ok: true, text: "Vault 已填写。" } : { ok: false, text: "请输入 vault 名称。" },
+      "fns-base-url": (value) => !value || /^https?:\/\//i.test(value)
+        ? { ok: true, text: value ? "地址格式正确。" : "可留空，表示暂不配置 FNS。" }
+        : { ok: false, text: "必须以 http:// 或 https:// 开头。" },
+      "fns-vault": (value) => !document.getElementById("fns-base-url").value.trim() || value
+        ? { ok: true, text: value ? "Vault 已填写。" : "未启用 FNS 时可以留空。" }
+        : { ok: false, text: "启用 FNS 时请输入 vault 名称。" },
       "fns-target-dir": (value) => value ? { ok: true, text: "将同步到该目录。" } : { ok: false, text: "请输入目标目录。" },
-      "fns-token": (value) => value || document.getElementById("fns-token-meta").textContent.includes("已配置")
+      "fns-token": (value) => !document.getElementById("fns-base-url").value.trim() || value || document.getElementById("fns-token-meta").textContent.includes("已配置")
         ? { ok: true, text: "FNS Token 可用。" }
-        : { ok: false, text: "未配置 FNS Token 时无法写入 FNS。" }
+        : { ok: false, text: "启用 FNS 时需要填写 Token。" },
+      "image-storage-endpoint": (value) => getImageMode() !== "s3_hotlink" || /^https?:\/\//i.test(value)
+        ? { ok: true, text: getImageMode() === "s3_hotlink" ? "Endpoint 格式正确。" : "当前模式无需填写。" }
+        : { ok: false, text: "S3 Endpoint 必须以 http:// 或 https:// 开头。" },
+      "image-storage-region": (value) => getImageMode() !== "s3_hotlink" || value
+        ? { ok: true, text: getImageMode() === "s3_hotlink" ? "Region 已填写。" : "当前模式无需填写。" }
+        : { ok: false, text: "请选择或填写 S3 Region。" },
+      "image-storage-bucket": (value) => getImageMode() !== "s3_hotlink" || value
+        ? { ok: true, text: getImageMode() === "s3_hotlink" ? "Bucket 已填写。" : "当前模式无需填写。" }
+        : { ok: false, text: "请输入 Bucket。" },
+      "image-storage-access-key-id": (value) => getImageMode() !== "s3_hotlink" || value
+        ? { ok: true, text: getImageMode() === "s3_hotlink" ? "Access Key ID 已填写。" : "当前模式无需填写。" }
+        : { ok: false, text: "请输入 Access Key ID。" },
+      "image-storage-secret-access-key": (value) => getImageMode() !== "s3_hotlink" || value || document.getElementById("image-storage-secret-meta").textContent.includes("已配置")
+        ? { ok: true, text: getImageMode() === "s3_hotlink" ? "图床密钥可用。" : "当前模式无需填写。" }
+        : { ok: false, text: "请输入 Secret Access Key。" },
+      "image-storage-path-template": (value) => getImageMode() !== "s3_hotlink" || value
+        ? { ok: true, text: getImageMode() === "s3_hotlink" ? "路径模板已填写。" : "当前模式无需填写。" }
+        : { ok: false, text: "请输入路径模板。" },
+      "image-storage-public-base-url": (value) => getImageMode() !== "s3_hotlink" || /^https?:\/\//i.test(value)
+        ? { ok: true, text: getImageMode() === "s3_hotlink" ? "公开访问域名格式正确。" : "当前模式无需填写。" }
+        : { ok: false, text: "公开访问域名必须以 http:// 或 https:// 开头。" }
     };
 
     function markChanged(id) {
-      document.getElementById(id).classList.add("changed");
+      document.getElementById(id)?.classList.add("changed");
     }
 
     function resetChanged() {
@@ -294,27 +362,34 @@
       document.getElementById("metric-auth").textContent = data.auth_enabled ? "已开启" : "未开启";
       document.getElementById("metric-user").textContent = data.current_user?.username || "-";
       document.getElementById("metric-vault").textContent = data.fns_vault || "未配置";
-      document.getElementById("metric-runtime").textContent = String((data.runtime_overrides || []).length);
+      document.getElementById("metric-image-mode").textContent = data.image_mode === "s3_hotlink" ? "S3 图床外链" : "微信原链";
       document.getElementById("current-user-label").textContent = data.current_user?.username || "-";
     }
 
     function setHint(id, state, text) {
       const input = document.getElementById(id);
       const hint = document.getElementById(`hint-${id}`);
+      if (!input || !hint) return;
       hint.textContent = text;
       hint.className = `field-hint ${state ? "success" : "error"}`;
       input.classList.toggle("input-invalid", !state);
     }
 
+    function syncImageModeUI() {
+      const useS3 = getImageMode() === "s3_hotlink";
+      document.getElementById("s3-settings-panel").classList.toggle("hidden", !useS3);
+      validateForm();
+    }
+
     function validateField(id) {
-      const value = document.getElementById(id).value.trim();
+      const value = document.getElementById(id)?.value?.trim() || "";
       const result = validators[id](value);
       setHint(id, result.ok, result.text);
       return result.ok;
     }
 
     function validateForm() {
-      const ids = ["fns-base-url", "fns-vault", "fns-target-dir", "fns-token"];
+      const ids = ["fns-base-url", "fns-vault", "fns-target-dir", "fns-token", ...s3FieldIds];
       const allValid = ids.every((id) => validateField(id));
       document.getElementById("save-settings").disabled = !allValid;
       return allValid;
@@ -369,10 +444,23 @@
       document.getElementById("fns-token").value = "";
       document.getElementById("cleanup-temp-on-success").checked = Boolean(data.cleanup_temp_on_success);
       document.getElementById("fns-token-meta").textContent = data.fns_token_configured ? `已配置：${data.fns_token_masked}` : "当前未配置";
+
+      document.getElementById(data.image_mode === "s3_hotlink" ? "image-mode-s3" : "image-mode-wechat").checked = true;
+      document.getElementById("image-storage-endpoint").value = data.image_storage_endpoint || "";
+      document.getElementById("image-storage-region").value = data.image_storage_region || "";
+      document.getElementById("image-storage-bucket").value = data.image_storage_bucket || "";
+      document.getElementById("image-storage-access-key-id").value = data.image_storage_access_key_id || "";
+      document.getElementById("image-storage-secret-access-key").value = "";
+      document.getElementById("image-storage-path-template").value = data.image_storage_path_template || "";
+      document.getElementById("image-storage-public-base-url").value = data.image_storage_public_base_url || "";
+      document.getElementById("image-storage-secret-meta").textContent = data.image_storage_secret_access_key_configured
+        ? `已配置：${data.image_storage_secret_access_key_masked}`
+        : "当前未配置";
+
       updateOverview(data);
       clearFields.clear();
       resetChanged();
-      validateForm();
+      syncImageModeUI();
       await checkFnsStatus();
     }
 
@@ -428,18 +516,35 @@
       setResult("已标记：保存时会清空 FNS Token。");
     });
 
+    document.getElementById("clear-image-storage-secret").addEventListener("click", () => {
+      clearFields.add("image_storage_secret_access_key");
+      document.getElementById("image-storage-secret-access-key").value = "";
+      document.getElementById("image-storage-secret-meta").textContent = "本次保存会清空图床密钥。";
+      markChanged("image-storage-secret-access-key");
+      validateForm();
+      setResult("已标记：保存时会清空图床 Secret Access Key。");
+    });
+
     document.getElementById("save-settings").addEventListener("click", async () => {
       const payload = {
         fns_base_url: document.getElementById("fns-base-url").value.trim(),
         fns_vault: document.getElementById("fns-vault").value.trim(),
         fns_target_dir: document.getElementById("fns-target-dir").value.trim(),
         cleanup_temp_on_success: document.getElementById("cleanup-temp-on-success").checked,
+        image_mode: getImageMode(),
+        image_storage_endpoint: document.getElementById("image-storage-endpoint").value.trim(),
+        image_storage_region: document.getElementById("image-storage-region").value.trim(),
+        image_storage_bucket: document.getElementById("image-storage-bucket").value.trim(),
+        image_storage_access_key_id: document.getElementById("image-storage-access-key-id").value.trim(),
+        image_storage_path_template: document.getElementById("image-storage-path-template").value.trim(),
+        image_storage_public_base_url: document.getElementById("image-storage-public-base-url").value.trim(),
         clear_fields: Array.from(clearFields)
       };
       const fnsToken = document.getElementById("fns-token").value.trim();
-      if (fnsToken) {
-        payload.fns_token = fnsToken;
-      }
+      const storageSecret = document.getElementById("image-storage-secret-access-key").value.trim();
+      if (fnsToken) payload.fns_token = fnsToken;
+      if (storageSecret) payload.image_storage_secret_access_key = storageSecret;
+
       const response = await fetch("/api/admin/settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -473,16 +578,20 @@
       checkFnsStatus().catch((error) => setFnsHealth("error", String(error)));
     });
 
-    ["fns-base-url", "fns-vault", "fns-target-dir", "fns-token"].forEach((id) => {
+    ["fns-base-url", "fns-vault", "fns-target-dir", "fns-token", ...s3FieldIds].forEach((id) => {
       document.getElementById(id).addEventListener("input", () => {
         clearFields.delete(id.replace(/-/g, "_"));
         validateForm();
       });
     });
 
+    document.querySelectorAll('input[name="image-mode"]').forEach((node) => {
+      node.addEventListener("change", syncImageModeUI);
+    });
+
     document.getElementById("logout-button").addEventListener("click", async () => {
       await fetch("/api/session", { method: "DELETE" });
-      window.location.href = "/";
+      window.location.href = "/login";
     });
 
     loadSettings().catch((error) => {
