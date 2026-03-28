@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Wechat MD Server</title>
+  <style>
+    :root {
+      --bg: #f4efe6;
+      --card: #fffdf8;
+      --ink: #1f2430;
+      --muted: #6a7280;
+      --line: #ded4c2;
+      --accent: #c35f2d;
+      --accent-2: #285943;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top right, rgba(195,95,45,.14), transparent 28%),
+        radial-gradient(circle at bottom left, rgba(40,89,67,.1), transparent 26%),
+        var(--bg);
+    }
+    main { max-width: 1100px; margin: 0 auto; padding: 40px 20px 56px; }
+    h1 { margin: 0 0 8px; font-size: 34px; }
+    p.lead { margin: 0 0 24px; color: var(--muted); }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 18px; }
+    .card {
+      background: rgba(255,253,248,.88);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 18px;
+      box-shadow: 0 18px 50px rgba(46, 38, 26, .08);
+      backdrop-filter: blur(10px);
+    }
+    .card h2 { margin: 0 0 14px; font-size: 20px; }
+    label { display: block; margin: 12px 0 6px; font-size: 14px; color: var(--muted); }
+    input, textarea, button {
+      width: 100%;
+      font: inherit;
+      border-radius: 12px;
+    }
+    input, textarea {
+      padding: 12px 14px;
+      border: 1px solid var(--line);
+      background: #fff;
+    }
+    textarea { min-height: 180px; resize: vertical; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .actions { display: flex; gap: 10px; margin-top: 16px; }
+    .actions button {
+      border: 0;
+      padding: 12px 14px;
+      cursor: pointer;
+      color: #fff;
+      background: var(--accent);
+    }
+    .actions button.secondary { background: var(--accent-2); }
+    pre, .result {
+      margin: 0;
+      padding: 14px;
+      border-radius: 14px;
+      background: #231f1a;
+      color: #f2eee7;
+      overflow: auto;
+      min-height: 160px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    ul.jobs { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
+    ul.jobs li {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 12px;
+      background: #fff;
+    }
+    small { color: var(--muted); }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Wechat MD Server</h1>
+    <p class="lead">本地把微信公众号文章转成 Markdown，写入 Obsidian，并自动处理图片外链。</p>
+    <div class="grid">
+      <section class="card">
+        <h2>单篇转换</h2>
+        <label for="single-url">微信文章链接</label>
+        <input id="single-url" placeholder="https://mp.weixin.qq.com/s/..." />
+        <label for="single-output">输出目录</label>
+        <input id="single-output" placeholder="D:\obsidian\00_Inbox" />
+        <div class="row">
+          <div>
+            <label for="single-timeout">超时秒数</label>
+            <input id="single-timeout" type="number" value="30" />
+          </div>
+          <div>
+            <label for="single-save-html">保留 HTML</label>
+            <input id="single-save-html" type="checkbox" style="width:auto; transform: translateY(10px);" />
+          </div>
+        </div>
+        <div class="actions">
+          <button id="single-submit">执行转换</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>批量转换</h2>
+        <label for="batch-urls">多行链接</label>
+        <textarea id="batch-urls" placeholder="每行一个微信文章链接"></textarea>
+        <label for="batch-file">或导入文件（txt / md / csv）</label>
+        <input id="batch-file" type="file" />
+        <label for="batch-output">输出目录</label>
+        <input id="batch-output" placeholder="D:\obsidian\00_Inbox" />
+        <div class="row">
+          <div>
+            <label for="batch-timeout">超时秒数</label>
+            <input id="batch-timeout" type="number" value="30" />
+          </div>
+          <div>
+            <label for="batch-save-html">保留 HTML</label>
+            <input id="batch-save-html" type="checkbox" style="width:auto; transform: translateY(10px);" />
+          </div>
+        </div>
+        <div class="actions">
+          <button id="batch-submit" class="secondary">创建批量任务</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>服务状态</h2>
+        <pre id="config-result">加载中...</pre>
+      </section>
+
+      <section class="card">
+        <h2>单篇结果</h2>
+        <pre id="single-result">等待执行</pre>
+      </section>
+
+      <section class="card" style="grid-column: 1 / -1;">
+        <h2>批量任务</h2>
+        <small>创建任务后会自动轮询状态。</small>
+        <div class="result" id="batch-result">暂无任务</div>
+      </section>
+    </div>
+  </main>
+  <script>
+    const configResult = document.getElementById("config-result");
+    const singleResult = document.getElementById("single-result");
+    const batchResult = document.getElementById("batch-result");
+
+    async function loadConfig() {
+      const response = await fetch("/api/config");
+      const data = await response.json();
+      configResult.textContent = JSON.stringify(data, null, 2);
+      document.getElementById("single-output").value = data.default_output_dir || "";
+      document.getElementById("batch-output").value = data.default_output_dir || "";
+    }
+
+    document.getElementById("single-submit").addEventListener("click", async () => {
+      singleResult.textContent = "处理中...";
+      const payload = {
+        url: document.getElementById("single-url").value.trim(),
+        output_dir: document.getElementById("single-output").value.trim(),
+        timeout: Number(document.getElementById("single-timeout").value || 30),
+        save_html: document.getElementById("single-save-html").checked
+      };
+      const response = await fetch("/api/convert", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      const data = await response.json();
+      singleResult.textContent = JSON.stringify(data, null, 2);
+    });
+
+    async function pollJob(jobId) {
+      let keepPolling = true;
+      while (keepPolling) {
+        const response = await fetch(`/api/jobs/${jobId}`);
+        const data = await response.json();
+        batchResult.textContent = JSON.stringify(data, null, 2);
+        keepPolling = data.status === "queued" || data.status === "running";
+        if (keepPolling) {
+          await new Promise((resolve) => setTimeout(resolve, 1500));
+        }
+      }
+    }
+
+    document.getElementById("batch-submit").addEventListener("click", async () => {
+      batchResult.textContent = "创建任务中...";
+      const fileInput = document.getElementById("batch-file");
+      const formData = new FormData();
+      formData.append("urls_text", document.getElementById("batch-urls").value);
+      formData.append("output_dir", document.getElementById("batch-output").value.trim());
+      formData.append("timeout", document.getElementById("batch-timeout").value || "30");
+      formData.append("save_html", document.getElementById("batch-save-html").checked ? "true" : "false");
+      if (fileInput.files[0]) {
+        formData.append("file", fileInput.files[0]);
+      }
+      const response = await fetch("/api/batch", {
+        method: "POST",
+        body: formData
+      });
+      const data = await response.json();
+      batchResult.textContent = JSON.stringify(data, null, 2);
+      if (data.job_id) {
+        pollJob(data.job_id);
+      }
+    });
+
+    loadConfig().catch((error) => {
+      configResult.textContent = String(error);
+    });
+  </script>
+</body>
+</html>
