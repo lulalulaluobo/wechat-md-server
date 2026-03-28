@@ -20,16 +20,22 @@
 
   <div class="page">
     <!-- Status Bar -->
+    <div class="page-header" style="margin-bottom:12px;">
+      <h1>转换中心</h1>
+      <p>粘贴公众号文章链接，一键转换为 Markdown 并同步到 Obsidian。</p>
+    </div>
+
+    <div class="card" style="padding:16px 20px;">
+      <h2 class="card-title" style="font-size:18px; margin-bottom:10px;">工作台概览</h2>
+      <p class="card-desc" style="margin-bottom:12px;">当前 FNS 目标、图片模式和快速状态。</p>
+      <h3 class="card-title" style="font-size:15px; margin-bottom:0;">系统状态</h3>
+      <p class="card-desc" style="margin-top:6px;">转换前可以先检查当前同步环境。</p>
+    
     <div class="status-bar" id="status-bar">
       <div class="status-chip"><span class="dot" id="dot-fns"></span><span id="chip-fns">FNS 未检测</span></div>
       <div class="status-chip"><span id="chip-vault">Vault: -</span></div>
       <div class="status-chip"><span id="chip-image">图片: 微信原链</span></div>
     </div>
-
-    <!-- Page Header -->
-    <div class="page-header">
-      <h1>转换中心</h1>
-      <p>粘贴公众号文章链接，一键转换为 Markdown 并同步到 Obsidian。</p>
     </div>
 
     <!-- Single Convert Card -->
@@ -62,6 +68,7 @@
       </div>
 
       <div class="action-row mt-0">
+        <button id="single-paste" class="btn btn-ghost">粘贴</button>
         <button id="single-submit" class="btn btn-primary">执行转换</button>
         <button id="check-fns-btn" class="btn btn-secondary">检测 FNS</button>
       </div>
@@ -106,7 +113,14 @@
         <button id="batch-submit" class="btn btn-secondary">创建批量任务</button>
       </div>
 
+      <h3 class="card-title" style="font-size:15px; margin-top:18px;">任务摘要</h3>
+      <p class="card-desc">批量任务会在这里显示进度和状态。</p>
       <div id="batch-result-area"></div>
+    </div>
+
+    <div class="card">
+      <h2 class="card-title">最近结果</h2>
+      <p class="card-desc">单篇转换完成后，会先在这里展示结构化摘要和原始 JSON。</p>
     </div>
   </div>
 
@@ -116,6 +130,11 @@
 
     function imageModeLabel(mode) {
       return mode === "s3_hotlink" ? "S3 图床外链" : "微信原链";
+    }
+
+    function extractWechatLink(text) {
+      const matches = String(text || "").match(/https?:\/\/mp\.weixin\.qq\.com\/s(?:[/?][^\s)>]+)?/ig) || [];
+      return matches[0] || "";
     }
 
     /* ── Load Config ── */
@@ -182,6 +201,21 @@
       } finally {
         btn.disabled = false;
         btn.textContent = "检测 FNS";
+      }
+    });
+
+    document.getElementById("single-paste").addEventListener("click", async () => {
+      try {
+        const text = await navigator.clipboard.readText();
+        const url = extractWechatLink(text);
+        if (!url) {
+          AdminUI.toast("剪贴板中未识别到可用的微信文章链接", "warn");
+          return;
+        }
+        document.getElementById("single-url").value = url;
+        AdminUI.toast("已从剪贴板填入文章链接", "success");
+      } catch (err) {
+        AdminUI.toast("读取剪贴板失败，请手动粘贴", "error");
       }
     });
 

@@ -20,6 +20,7 @@ from app.auth import (
 DEFAULT_FNS_TARGET_DIR = "00_Inbox/微信公众号"
 DEFAULT_IMAGE_MODE = "wechat_hotlink"
 IMAGE_MODE_VALUES = {"wechat_hotlink", "s3_hotlink"}
+DEFAULT_TELEGRAM_NOTIFY_ON_COMPLETE = True
 
 
 @dataclass(frozen=True)
@@ -45,6 +46,14 @@ class Settings:
     image_storage_secret_access_key: str | None = None
     image_storage_path_template: str | None = None
     image_storage_public_base_url: str | None = None
+    telegram_enabled: bool = False
+    telegram_bot_token: str | None = None
+    telegram_webhook_public_base_url: str | None = None
+    telegram_webhook_secret: str | None = None
+    telegram_allowed_chat_ids: tuple[str, ...] = ()
+    telegram_notify_on_complete: bool = DEFAULT_TELEGRAM_NOTIFY_ON_COMPLETE
+    telegram_webhook_status: str = "inactive"
+    telegram_webhook_message: str = ""
 
     @property
     def fns_enabled(self) -> bool:
@@ -65,6 +74,22 @@ class Settings:
             ]
         )
 
+    @property
+    def telegram_enabled_and_configured(self) -> bool:
+        return bool(
+            self.telegram_enabled
+            and self.telegram_bot_token
+            and self.telegram_webhook_public_base_url
+            and self.telegram_webhook_secret
+            and self.telegram_allowed_chat_ids
+        )
+
+    @property
+    def telegram_webhook_url(self) -> str | None:
+        if not self.telegram_webhook_public_base_url:
+            return None
+        return f"{self.telegram_webhook_public_base_url.rstrip('/')}/api/integrations/telegram/webhook"
+
 
 FNS_FIELDS = {
     "fns_base_url",
@@ -84,6 +109,19 @@ IMAGE_STORAGE_TEXT_FIELDS = {
     "image_storage_public_base_url",
 }
 SECRET_FIELDS = {"fns_token", "image_storage_secret_access_key"}
+TELEGRAM_BOOL_FIELDS = {"telegram_enabled", "telegram_notify_on_complete"}
+TELEGRAM_TEXT_FIELDS = {
+    "telegram_webhook_public_base_url",
+    "telegram_webhook_status",
+    "telegram_webhook_message",
+}
+TELEGRAM_SECRET_FIELDS = {"telegram_bot_token", "telegram_webhook_secret"}
+SECRET_FIELDS = SECRET_FIELDS | TELEGRAM_SECRET_FIELDS
+TELEGRAM_TEXT_FIELD_MAP = {
+    "telegram_webhook_public_base_url": "webhook_public_base_url",
+    "telegram_webhook_status": "webhook_status",
+    "telegram_webhook_message": "webhook_message",
+}
 
 
 def get_runtime_config_path() -> Path:
@@ -117,6 +155,7 @@ def save_runtime_config(payload: dict[str, Any], clear_fields: list[str] | None 
     updated = _normalize_runtime_config(current)
     user_settings = dict(updated["user_settings"])
     image_storage = dict(user_settings["image_storage"])
+    telegram_settings = dict(user_settings["telegram"])
     clear_set = {field for field in (clear_fields or []) if field in SECRET_FIELDS}
 
     for field in clear_set:
@@ -124,6 +163,10 @@ def save_runtime_config(payload: dict[str, Any], clear_fields: list[str] | None 
             user_settings["fns_token"] = ""
         elif field == "image_storage_secret_access_key":
             image_storage["secret_access_key"] = ""
+        elif field == "telegram_bot_token":
+            telegram_settings["bot_token"] = ""
+        elif field == "telegram_webhook_secret":
+            telegram_settings["webhook_secret"] = ""
 
     for field in FNS_FIELDS:
         if field not in payload:
@@ -147,7 +190,32 @@ def save_runtime_config(payload: dict[str, Any], clear_fields: list[str] | None 
             continue
         image_storage[field.removeprefix("image_storage_")] = str(raw_value).strip()
 
+    for field in TELEGRAM_BOOL_FIELDS:
+        if field not in payload:
+            continue
+        telegram_settings[field.removeprefix("telegram_")] = _as_bool(payload.get(field), default=field == "telegram_notify_on_complete")
+
+    for field in TELEGRAM_TEXT_FIELDS:
+        if field not in payload:
+            continue
+        raw_value = payload.get(field)
+        if raw_value is None:
+            continue
+        telegram_settings[TELEGRAM_TEXT_FIELD_MAP[field]] = str(raw_value).strip()
+
+    for field in TELEGRAM_SECRET_FIELDS:
+        if field not in payload:
+            continue
+        raw_value = payload.get(field)
+        if raw_value is None:
+            continue
+        telegram_settings[field.removeprefix("telegram_")] = str(raw_value).strip()
+
+    if "telegram_allowed_chat_ids" in payload:
+        telegram_settings["allowed_chat_ids"] = _normalize_chat_ids(payload.get("telegram_allowed_chat_ids"))
+
     user_settings["image_storage"] = image_storage
+    user_settings["telegram"] = telegram_settings
     updated["user_settings"] = _normalize_user_settings(user_settings)
     _validate_runtime_config(updated)
     _write_runtime_config(config_path, updated)
@@ -193,11 +261,25 @@ def reset_admin_credentials(new_password: str, username: str | None = None) -> d
     return current
 
 
+def update_telegram_webhook_state(status: str, message: str, webhook_url: str | None = None) -> dict[str, Any]:
+    config_path = get_runtime_config_path()
+    current = load_runtime_config(config_path)
+    telegram = dict(current["user_settings"]["telegram"])
+    telegram["webhook_status"] = (status or "inactive").strip() or "inactive"
+    telegram["webhook_message"] = (message or "").strip()
+    if webhook_url is not None:
+        telegram["webhook_public_base_url"] = webhook_url.rsplit("/api/integrations/telegram/webhook", 1)[0] if webhook_url else ""
+    current["user_settings"]["telegram"] = telegram
+    _write_runtime_config(config_path, current)
+    return current
+
+
 def build_admin_settings_payload() -> dict[str, Any]:
     settings = get_settings()
     runtime_values = load_runtime_config(settings.runtime_config_path)
     user_settings = runtime_values["user_settings"]
     image_storage = user_settings["image_storage"]
+    telegram = user_settings["telegram"]
     runtime_overrides = [
         "auth.user.username",
         "auth.user.password_hash",
@@ -208,6 +290,7 @@ def build_admin_settings_payload() -> dict[str, Any]:
             if key != "image_storage"
         ],
         *[f"user_settings.image_storage.{key}" for key in sorted(image_storage.keys())],
+        *[f"user_settings.telegram.{key}" for key in sorted(telegram.keys())],
     ]
     return {
         "runtime_config_path": str(settings.runtime_config_path),
@@ -232,6 +315,17 @@ def build_admin_settings_payload() -> dict[str, Any]:
         "image_storage_public_base_url": settings.image_storage_public_base_url or "",
         "image_storage_secret_access_key_configured": bool(settings.image_storage_secret_access_key),
         "image_storage_secret_access_key_masked": _mask_secret(settings.image_storage_secret_access_key),
+        "telegram_enabled": settings.telegram_enabled,
+        "telegram_bot_token_configured": bool(settings.telegram_bot_token),
+        "telegram_bot_token_masked": _mask_secret(settings.telegram_bot_token),
+        "telegram_webhook_public_base_url": settings.telegram_webhook_public_base_url or "",
+        "telegram_webhook_url": settings.telegram_webhook_url or "",
+        "telegram_webhook_secret_configured": bool(settings.telegram_webhook_secret),
+        "telegram_webhook_secret_masked": _mask_secret(settings.telegram_webhook_secret),
+        "telegram_allowed_chat_ids_text": "\n".join(settings.telegram_allowed_chat_ids),
+        "telegram_notify_on_complete": settings.telegram_notify_on_complete,
+        "telegram_webhook_status": settings.telegram_webhook_status,
+        "telegram_webhook_message": settings.telegram_webhook_message,
         "runtime_overrides": runtime_overrides,
     }
 
@@ -243,6 +337,7 @@ def get_settings() -> Settings:
     user_block = auth_block["user"]
     runtime_user_settings = runtime_values["user_settings"]
     image_storage = runtime_user_settings["image_storage"]
+    telegram = runtime_user_settings["telegram"]
 
     output_dir = Path(os.environ.get("WECHAT_MD_DEFAULT_OUTPUT_DIR", r"D:\obsidian\00_Inbox")).resolve()
     fns_base_url = str(
@@ -281,6 +376,21 @@ def get_settings() -> Settings:
     public_base_url = str(
         image_storage.get("public_base_url") or os.environ.get("WECHAT_MD_IMAGE_STORAGE_PUBLIC_BASE_URL") or ""
     ).strip() or None
+    telegram_enabled = _as_bool(telegram.get("enabled"), default=False)
+    telegram_bot_token = str(telegram.get("bot_token") or os.environ.get("WECHAT_MD_TELEGRAM_BOT_TOKEN") or "").strip() or None
+    telegram_webhook_public_base_url = str(
+        telegram.get("webhook_public_base_url") or os.environ.get("WECHAT_MD_TELEGRAM_WEBHOOK_PUBLIC_BASE_URL") or ""
+    ).strip() or None
+    telegram_webhook_secret = str(
+        telegram.get("webhook_secret") or os.environ.get("WECHAT_MD_TELEGRAM_WEBHOOK_SECRET") or ""
+    ).strip() or None
+    telegram_allowed_chat_ids = tuple(_normalize_chat_ids(telegram.get("allowed_chat_ids") or os.environ.get("WECHAT_MD_TELEGRAM_ALLOWED_CHAT_IDS")))
+    telegram_notify_on_complete = _as_bool(
+        telegram.get("notify_on_complete"),
+        default=DEFAULT_TELEGRAM_NOTIFY_ON_COMPLETE,
+    )
+    telegram_webhook_status = str(telegram.get("webhook_status") or "inactive").strip() or "inactive"
+    telegram_webhook_message = str(telegram.get("webhook_message") or "").strip()
 
     return Settings(
         default_output_dir=output_dir,
@@ -303,6 +413,14 @@ def get_settings() -> Settings:
         image_storage_secret_access_key=secret_access_key,
         image_storage_path_template=path_template,
         image_storage_public_base_url=public_base_url.rstrip("/") if public_base_url else None,
+        telegram_enabled=telegram_enabled,
+        telegram_bot_token=telegram_bot_token,
+        telegram_webhook_public_base_url=telegram_webhook_public_base_url.rstrip("/") if telegram_webhook_public_base_url else None,
+        telegram_webhook_secret=telegram_webhook_secret,
+        telegram_allowed_chat_ids=telegram_allowed_chat_ids,
+        telegram_notify_on_complete=telegram_notify_on_complete,
+        telegram_webhook_status=telegram_webhook_status,
+        telegram_webhook_message=telegram_webhook_message,
     )
 
 
@@ -346,6 +464,7 @@ def _normalize_runtime_config(raw_data: dict[str, Any]) -> dict[str, Any]:
 def _normalize_user_settings(raw_settings: Any) -> dict[str, Any]:
     source = raw_settings if isinstance(raw_settings, dict) else {}
     image_storage_source = source.get("image_storage") if isinstance(source.get("image_storage"), dict) else {}
+    telegram_source = source.get("telegram") if isinstance(source.get("telegram"), dict) else {}
     return {
         "fns_base_url": str(source.get("fns_base_url") or "").strip(),
         "fns_token": _load_secret_value(
@@ -371,6 +490,24 @@ def _normalize_user_settings(raw_settings: Any) -> dict[str, Any]:
             "path_template": str(image_storage_source.get("path_template") or "").strip(),
             "public_base_url": str(image_storage_source.get("public_base_url") or "").strip(),
         },
+        "telegram": {
+            "enabled": _as_bool(telegram_source.get("enabled"), default=False),
+            "bot_token": _load_secret_value(
+                encrypted_value=telegram_source.get("bot_token_encrypted"),
+                plaintext_value=telegram_source.get("bot_token"),
+                field_name="telegram.bot_token",
+            ),
+            "webhook_public_base_url": str(telegram_source.get("webhook_public_base_url") or "").strip(),
+            "webhook_secret": _load_secret_value(
+                encrypted_value=telegram_source.get("webhook_secret_encrypted"),
+                plaintext_value=telegram_source.get("webhook_secret"),
+                field_name="telegram.webhook_secret",
+            ),
+            "allowed_chat_ids": _normalize_chat_ids(telegram_source.get("allowed_chat_ids")),
+            "notify_on_complete": _as_bool(telegram_source.get("notify_on_complete"), default=DEFAULT_TELEGRAM_NOTIFY_ON_COMPLETE),
+            "webhook_status": str(telegram_source.get("webhook_status") or "inactive").strip() or "inactive",
+            "webhook_message": str(telegram_source.get("webhook_message") or "").strip(),
+        },
     }
 
 
@@ -383,6 +520,7 @@ def _serialize_runtime_config(data: dict[str, Any]) -> dict[str, Any]:
     auth_block = data["auth"]
     user_settings = data["user_settings"]
     image_storage = user_settings["image_storage"]
+    telegram = user_settings["telegram"]
     return {
         "auth": {
             "user": {
@@ -407,6 +545,16 @@ def _serialize_runtime_config(data: dict[str, Any]) -> dict[str, Any]:
                 "secret_access_key_encrypted": encrypt_secret(str(image_storage.get("secret_access_key") or "")),
                 "path_template": str(image_storage.get("path_template") or "").strip(),
                 "public_base_url": str(image_storage.get("public_base_url") or "").strip(),
+            },
+            "telegram": {
+                "enabled": _as_bool(telegram.get("enabled"), default=False),
+                "bot_token_encrypted": encrypt_secret(str(telegram.get("bot_token") or "")),
+                "webhook_public_base_url": str(telegram.get("webhook_public_base_url") or "").strip(),
+                "webhook_secret_encrypted": encrypt_secret(str(telegram.get("webhook_secret") or "")),
+                "allowed_chat_ids": _normalize_chat_ids(telegram.get("allowed_chat_ids")),
+                "notify_on_complete": _as_bool(telegram.get("notify_on_complete"), default=DEFAULT_TELEGRAM_NOTIFY_ON_COMPLETE),
+                "webhook_status": str(telegram.get("webhook_status") or "inactive").strip() or "inactive",
+                "webhook_message": str(telegram.get("webhook_message") or "").strip(),
             },
         },
     }
@@ -451,6 +599,23 @@ def _validate_runtime_config(data: dict[str, Any]) -> None:
     if base_url and not base_url.startswith(("http://", "https://")):
         raise ValueError("FNS 基础地址必须以 http:// 或 https:// 开头")
 
+    telegram = user_settings["telegram"]
+    telegram_webhook_public_base_url = str(telegram.get("webhook_public_base_url") or "").strip()
+    if telegram_webhook_public_base_url and not telegram_webhook_public_base_url.startswith(("http://", "https://")):
+        raise ValueError("Telegram Webhook 对外基础地址必须以 http:// 或 https:// 开头")
+    if _as_bool(telegram.get("enabled"), default=False):
+        missing_telegram = []
+        if not str(telegram.get("bot_token") or "").strip():
+            missing_telegram.append("bot_token")
+        if not telegram_webhook_public_base_url:
+            missing_telegram.append("webhook_public_base_url")
+        if not str(telegram.get("webhook_secret") or "").strip():
+            missing_telegram.append("webhook_secret")
+        if not _normalize_chat_ids(telegram.get("allowed_chat_ids")):
+            missing_telegram.append("allowed_chat_ids")
+        if missing_telegram:
+            raise ValueError("Telegram Bot 配置不完整，缺少字段: " + ", ".join(missing_telegram))
+
     image_mode = user_settings.get("image_mode")
     if image_mode not in IMAGE_MODE_VALUES:
         raise ValueError("图片模式仅支持 wechat_hotlink 或 s3_hotlink")
@@ -481,3 +646,21 @@ def _as_bool(value: Any, default: bool) -> bool:
     if isinstance(value, bool):
         return value
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _normalize_chat_ids(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        raw_parts = [str(item).strip() for item in value]
+    else:
+        text = str(value).replace(",", "\n")
+        raw_parts = [part.strip() for part in text.splitlines()]
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for part in raw_parts:
+        if not part or part in seen:
+            continue
+        seen.add(part)
+        deduped.append(part)
+    return deduped

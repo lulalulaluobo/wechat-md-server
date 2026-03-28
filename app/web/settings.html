@@ -24,10 +24,19 @@
       <p>维护 FNS 同步目标、图片策略和账号安全。保存后立即生效。</p>
     </div>
 
+    <div class="card" style="padding:16px 20px;">
+      <h2 class="card-title" style="font-size:18px; margin-bottom:10px;">配置总览</h2>
+      <p class="card-desc" style="margin-bottom:12px;">统一管理同步、图片和 Telegram 触发能力。</p>
+      <h3 class="card-title" style="font-size:15px; margin-bottom:0;">连接诊断</h3>
+      <p class="card-desc" style="margin-top:6px;">保存前可先检查 FNS 和 Telegram 的对外连接状态。</p>
+      <div id="fns-status-result"></div>
+    </div>
+
     <!-- Tab Navigation -->
     <div class="tab-nav" data-tab-group="settings">
       <button class="tab-btn active" data-tab="fns">FNS 同步</button>
       <button class="tab-btn" data-tab="image">图片模式</button>
+      <button class="tab-btn" data-tab="telegram">Telegram Bot</button>
       <button class="tab-btn" data-tab="behavior">运行行为</button>
       <button class="tab-btn" data-tab="security">账号安全</button>
     </div>
@@ -43,7 +52,7 @@
           <textarea id="fns-json-input" placeholder='{"api":"https://...","apiToken":"...","vault":"obsidian"}' style="min-height:70px;"></textarea>
         </div>
         <div class="action-row" style="margin-top:8px;">
-          <button id="paste-fns-btn" class="btn btn-secondary">从剪贴板导入</button>
+          <button id="paste-fns-btn" class="btn btn-secondary">从剪贴板导入 FNS</button>
           <button id="parse-fns-btn" class="btn btn-ghost">解析并填充</button>
         </div>
 
@@ -154,6 +163,55 @@
       </div>
     </div>
 
+    <!-- Tab: Telegram -->
+    <div class="tab-panel" data-tab-panel="settings" data-tab-id="telegram">
+      <div class="card">
+        <h2 class="card-title">Telegram Bot</h2>
+        <p class="card-desc">把微信文章链接直接发给 Bot，即可触发单篇转换。Webhook 保存时会自动注册。</p>
+
+        <label class="check-row" style="margin-bottom:12px;">
+          <input id="telegram-enabled" type="checkbox">
+          启用 Telegram Bot
+        </label>
+        <label class="check-row" style="margin-bottom:12px;">
+          <input id="telegram-notify-on-complete" type="checkbox">
+          转换完成后发送结果通知
+        </label>
+
+        <div class="field-row">
+          <div class="field">
+            <label for="telegram-bot-token">Bot Token</label>
+            <input id="telegram-bot-token" type="password" placeholder="留空则保持不变">
+            <div class="field-hint text-muted" id="telegram-bot-token-meta"></div>
+          </div>
+          <div class="field">
+            <label for="telegram-webhook-secret">Webhook Secret</label>
+            <input id="telegram-webhook-secret" type="password" placeholder="留空则保持不变">
+            <div class="field-hint text-muted" id="telegram-webhook-secret-meta"></div>
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="telegram-webhook-public-base-url">Webhook 对外基础地址</label>
+          <input id="telegram-webhook-public-base-url" placeholder="https://your-domain.example.com">
+          <div class="field-hint" id="hint-telegram-webhook-public-base-url"></div>
+        </div>
+
+        <div class="field">
+          <label for="telegram-allowed-chat-ids">白名单 Chat ID</label>
+          <textarea id="telegram-allowed-chat-ids" placeholder="每行一个 chat_id，或逗号分隔" style="min-height:90px;"></textarea>
+          <div class="field-hint" id="hint-telegram-allowed-chat-ids"></div>
+        </div>
+
+        <div class="action-row">
+          <button id="clear-telegram-token" class="btn btn-danger">清空 Bot Token</button>
+          <button id="clear-telegram-secret" class="btn btn-danger">清空 Webhook Secret</button>
+        </div>
+
+        <div id="telegram-result-area"></div>
+      </div>
+    </div>
+
     <!-- Tab: Behavior -->
     <div class="tab-panel" data-tab-panel="settings" data-tab-id="behavior">
       <div class="card">
@@ -171,7 +229,8 @@
     <div class="tab-panel" data-tab-panel="settings" data-tab-id="security">
       <div class="card">
         <h2 class="card-title">修改密码</h2>
-        <p class="card-desc">当前登录用户：<strong id="current-user">-</strong></p>
+        <p class="card-desc">当前登录用户</p>
+        <p class="text-sm" style="margin-top:4px; margin-bottom:16px;"><strong id="current-user">-</strong></p>
         <div class="field-row">
           <div class="field">
             <label for="current-password">当前密码</label>
@@ -249,6 +308,18 @@
       "s3-public-url": (v) => getImageMode() !== "s3_hotlink" || /^https?:\/\//i.test(v)
         ? { ok: true, text: "" }
         : { ok: false, text: "必须以 http:// 或 https:// 开头" },
+      "telegram-webhook-public-base-url": (v) => !document.getElementById("telegram-enabled").checked || /^https?:\/\//i.test(v)
+        ? { ok: true, text: "" }
+        : { ok: false, text: "必须以 http:// 或 https:// 开头" },
+      "telegram-allowed-chat-ids": (v) => !document.getElementById("telegram-enabled").checked || Boolean(v.trim())
+        ? { ok: true, text: "" }
+        : { ok: false, text: "启用 Telegram 时请填写白名单 Chat ID" },
+      "telegram-bot-token": (v) => !document.getElementById("telegram-enabled").checked || v || document.getElementById("telegram-bot-token-meta").textContent.includes("已配置")
+        ? { ok: true, text: "" }
+        : { ok: false, text: "启用 Telegram 时需要 Bot Token" },
+      "telegram-webhook-secret": (v) => !document.getElementById("telegram-enabled").checked || v || document.getElementById("telegram-webhook-secret-meta").textContent.includes("已配置")
+        ? { ok: true, text: "" }
+        : { ok: false, text: "启用 Telegram 时需要 Webhook Secret" },
     };
 
     function validateField(id) {
@@ -329,6 +400,22 @@
       AdminUI.toast("已标记清空图床密钥", "warn");
     });
 
+    document.getElementById("clear-telegram-token").addEventListener("click", () => {
+      clearFields.add("telegram_bot_token");
+      document.getElementById("telegram-bot-token").value = "";
+      document.getElementById("telegram-bot-token-meta").textContent = "保存时将清空 Bot Token";
+      validateAll();
+      AdminUI.toast("已标记清空 Telegram Bot Token", "warn");
+    });
+
+    document.getElementById("clear-telegram-secret").addEventListener("click", () => {
+      clearFields.add("telegram_webhook_secret");
+      document.getElementById("telegram-webhook-secret").value = "";
+      document.getElementById("telegram-webhook-secret-meta").textContent = "保存时将清空 Webhook Secret";
+      validateAll();
+      AdminUI.toast("已标记清空 Telegram Webhook Secret", "warn");
+    });
+
     /* ── Check FNS ── */
     document.getElementById("check-fns-btn").addEventListener("click", async () => {
       const btn = document.getElementById("check-fns-btn");
@@ -339,22 +426,33 @@
         const data = await res.json();
         if (data.connected && data.vault_exists) {
           AdminUI.toast("FNS 连接正常", "success");
-          AdminUI.setHtml("fns-result-area", AdminUI.resultHtml({
+          const html = AdminUI.resultHtml({
             title: "连接正常", tone: "success",
             description: data.message,
             items: [{ label: "服务地址", value: data.base_url }, { label: "Vault", value: data.vault_name }],
             json: data,
-          }));
+          });
+          AdminUI.setHtml("fns-result-area", html);
+          AdminUI.setHtml("fns-status-result", html);
         } else {
           AdminUI.toast(data.message || "连接异常", data.connected ? "warn" : "error");
-          AdminUI.setHtml("fns-result-area", AdminUI.resultHtml({
+          const html = AdminUI.resultHtml({
             title: data.connected ? "目标异常" : "连接失败",
             tone: data.connected ? "warn" : "error",
             description: data.message,
             json: data,
-          }));
+          });
+          AdminUI.setHtml("fns-result-area", html);
+          AdminUI.setHtml("fns-status-result", html);
         }
-      } catch (err) { AdminUI.toast("检测失败", "error"); }
+      } catch (err) {
+        AdminUI.toast("检测失败", "error");
+        AdminUI.setHtml("fns-status-result", AdminUI.resultHtml({
+          title: "检测失败",
+          tone: "error",
+          description: "无法完成连接检测，请稍后重试。",
+        }));
+      }
       finally { btn.disabled = false; btn.textContent = "检测 FNS 连接"; }
     });
 
@@ -377,12 +475,20 @@
         image_storage_access_key_id: document.getElementById("s3-access-key").value.trim(),
         image_storage_path_template: document.getElementById("s3-path-tpl").value.trim(),
         image_storage_public_base_url: document.getElementById("s3-public-url").value.trim(),
+        telegram_enabled: document.getElementById("telegram-enabled").checked,
+        telegram_notify_on_complete: document.getElementById("telegram-notify-on-complete").checked,
+        telegram_webhook_public_base_url: document.getElementById("telegram-webhook-public-base-url").value.trim(),
+        telegram_allowed_chat_ids: document.getElementById("telegram-allowed-chat-ids").value.trim(),
         clear_fields: Array.from(clearFields),
       };
       const fnsToken = document.getElementById("fns-token").value.trim();
       const s3Secret = document.getElementById("s3-secret-key").value.trim();
+      const telegramToken = document.getElementById("telegram-bot-token").value.trim();
+      const telegramSecret = document.getElementById("telegram-webhook-secret").value.trim();
       if (fnsToken) payload.fns_token = fnsToken;
       if (s3Secret) payload.image_storage_secret_access_key = s3Secret;
+      if (telegramToken) payload.telegram_bot_token = telegramToken;
+      if (telegramSecret) payload.telegram_webhook_secret = telegramSecret;
 
       try {
         const res = await fetch("/api/admin/settings", {
@@ -398,9 +504,22 @@
             items: [
               { label: "FNS Vault", value: data.settings?.fns_vault || "-" },
               { label: "图片模式", value: data.settings?.image_mode === "s3_hotlink" ? "S3 图床外链" : "微信原链" },
+              { label: "Telegram", value: data.settings?.telegram_enabled ? "已启用" : "未启用" },
             ],
             json: data,
           }));
+          if (data.telegram_webhook) {
+            AdminUI.setHtml("telegram-result-area", AdminUI.resultHtml({
+              title: "Webhook 注册结果",
+              tone: data.telegram_webhook.status === "success" ? "success" : data.telegram_webhook.status === "inactive" ? "info" : "warn",
+              description: data.telegram_webhook.message || "Telegram Webhook 状态已更新",
+              items: [
+                { label: "Webhook 地址", value: data.telegram_webhook.webhook_url || "-" },
+                { label: "状态", value: data.telegram_webhook.status || "-" },
+              ],
+              json: data.telegram_webhook,
+            }));
+          }
           await loadSettings();
         } else {
           AdminUI.toast("保存失败", "error");
@@ -463,6 +582,31 @@
         document.getElementById("s3-public-url").value = data.image_storage_public_base_url || "";
         document.getElementById("s3-secret-meta").textContent = data.image_storage_secret_access_key_configured
           ? `已配置：${data.image_storage_secret_access_key_masked}` : "未配置";
+
+        document.getElementById("telegram-enabled").checked = Boolean(data.telegram_enabled);
+        document.getElementById("telegram-notify-on-complete").checked = Boolean(data.telegram_notify_on_complete);
+        document.getElementById("telegram-bot-token").value = "";
+        document.getElementById("telegram-webhook-secret").value = "";
+        document.getElementById("telegram-webhook-public-base-url").value = data.telegram_webhook_public_base_url || "";
+        document.getElementById("telegram-allowed-chat-ids").value = data.telegram_allowed_chat_ids_text || "";
+        document.getElementById("telegram-bot-token-meta").textContent = data.telegram_bot_token_configured
+          ? `已配置：${data.telegram_bot_token_masked}` : "未配置";
+        document.getElementById("telegram-webhook-secret-meta").textContent = data.telegram_webhook_secret_configured
+          ? `已配置：${data.telegram_webhook_secret_masked}` : "未配置";
+
+        if (data.telegram_enabled || data.telegram_webhook_status !== "inactive" || data.telegram_webhook_message) {
+          AdminUI.setHtml("telegram-result-area", AdminUI.resultHtml({
+            title: "Webhook 状态",
+            tone: data.telegram_webhook_status === "success" ? "success" : data.telegram_webhook_status === "error" ? "error" : "info",
+            description: data.telegram_webhook_message || "尚未注册 Webhook",
+            items: [
+              { label: "Webhook 地址", value: data.telegram_webhook_url || "-" },
+              { label: "状态", value: data.telegram_webhook_status || "inactive" },
+            ],
+          }));
+        } else {
+          AdminUI.setHtml("telegram-result-area", "");
+        }
 
         AdminUI.setText("current-user", data.current_user?.username || "-");
         clearFields.clear();

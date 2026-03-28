@@ -12,11 +12,12 @@ from typing import Any
 
 import requests
 
-from app.config import get_settings
+from app.config import get_settings, update_telegram_webhook_state
 from app.core.pipeline import run_pipeline, sanitize_filename
 
 
-URL_PATTERN = re.compile(r"https?://mp\.weixin\.qq\.com/s/[^\s)>]+", re.IGNORECASE)
+URL_PATTERN = re.compile(r"https?://mp\.weixin\.qq\.com/s(?:[/?][^\s)>]+)?", re.IGNORECASE)
+TELEGRAM_SECRET_HEADER = "X-Telegram-Bot-Api-Secret-Token"
 
 
 def get_internal_workdir_root() -> Path:
@@ -145,6 +146,50 @@ class JobStore:
 def normalize_output_dir(output_dir: str | None) -> Path:
     settings = get_settings()
     return Path(output_dir).resolve() if output_dir else settings.default_output_dir
+
+
+def execute_single_conversion(
+    url: str,
+    timeout: int | None = None,
+    save_html: bool = False,
+    output_target: str | None = None,
+) -> dict[str, Any]:
+    settings = get_settings()
+    normalized_target = build_output_target(output_target, settings)
+    normalized_timeout = int(timeout or settings.default_timeout)
+    ensure_runtime_environment()
+
+    workspace: Path | None = None
+    output_dir = normalize_output_dir(None)
+    if normalized_target == "fns":
+        workspace = create_internal_workdir("single")
+        output_dir = workspace
+
+    try:
+        result = run_pipeline(
+            url=url,
+            output_base_dir=output_dir,
+            save_html=save_html,
+            timeout=normalized_timeout,
+        )
+        sync = sync_result_to_output(result, output_target=normalized_target)
+        local_artifacts = {"retained": False, "workdir": None}
+        if workspace is not None:
+            if settings.cleanup_temp_on_success:
+                cleanup_internal_workdir(workspace)
+            else:
+                local_artifacts = {"retained": True, "workdir": str(workspace)}
+    except Exception:
+        cleanup_internal_workdir(workspace)
+        raise
+
+    return {
+        "status": "success",
+        "output_target": normalized_target,
+        "result": result,
+        "sync": sync,
+        "local_artifacts": local_artifacts,
+    }
 
 
 def ensure_runtime_environment() -> None:
@@ -356,6 +401,119 @@ def sync_markdown_to_fns(
     }
 
 
+def configure_telegram_webhook(http_session=None) -> dict[str, Any]:
+    settings = get_settings()
+    if not settings.telegram_bot_token:
+        state = {"status": "inactive", "message": "Telegram Bot Token 未配置", "webhook_url": ""}
+        update_telegram_webhook_state(state["status"], state["message"])
+        return state
+
+    session = http_session or requests.Session()
+    if not settings.telegram_enabled:
+        response = session.post(
+            _telegram_api_url(settings.telegram_bot_token, "deleteWebhook"),
+            json={"drop_pending_updates": False},
+            timeout=max(settings.default_timeout, 15),
+        )
+        response.raise_for_status()
+        state = {"status": "inactive", "message": "Telegram Webhook 已删除", "webhook_url": ""}
+        update_telegram_webhook_state(state["status"], state["message"])
+        return state
+
+    if not settings.telegram_enabled_and_configured or not settings.telegram_webhook_url:
+        state = {"status": "error", "message": "Telegram Bot 配置不完整", "webhook_url": settings.telegram_webhook_url or ""}
+        update_telegram_webhook_state(state["status"], state["message"])
+        return state
+
+    response = session.post(
+        _telegram_api_url(settings.telegram_bot_token, "setWebhook"),
+        json={
+            "url": settings.telegram_webhook_url,
+            "secret_token": settings.telegram_webhook_secret,
+            "allowed_updates": ["message"],
+        },
+        timeout=max(settings.default_timeout, 15),
+    )
+    response.raise_for_status()
+    payload = response.json()
+    ok = bool(payload.get("ok", False))
+    description = str(payload.get("description") or ("Telegram Webhook 已注册" if ok else "Telegram Webhook 注册失败"))
+    state = {
+        "status": "success" if ok else "error",
+        "message": description,
+        "webhook_url": settings.telegram_webhook_url,
+    }
+    update_telegram_webhook_state(state["status"], state["message"])
+    return state
+
+
+def send_telegram_message(chat_id: str, text: str, http_session=None) -> dict[str, Any]:
+    settings = get_settings()
+    if not settings.telegram_bot_token:
+        raise RuntimeError("Telegram Bot Token 未配置")
+    session = http_session or requests.Session()
+    response = session.post(
+        _telegram_api_url(settings.telegram_bot_token, "sendMessage"),
+        json={"chat_id": chat_id, "text": text},
+        timeout=max(settings.default_timeout, 15),
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def submit_telegram_convert_task(url: str, chat_id: str) -> None:
+    _telegram_executor.submit(process_telegram_convert_task, url, chat_id)
+
+
+def process_telegram_convert_task(url: str, chat_id: str) -> None:
+    settings = get_settings()
+    try:
+        payload = execute_single_conversion(
+            url=url,
+            timeout=settings.default_timeout,
+            save_html=False,
+            output_target="fns",
+        )
+    except Exception as error:
+        send_telegram_message(chat_id, f"转换失败：{error}")
+        return
+
+    if not settings.telegram_notify_on_complete:
+        return
+
+    title = str(payload["result"].get("title") or "转换完成")
+    sync_path = str(payload["sync"].get("path") or payload["sync"].get("markdown_file") or "-")
+    image_mode = "S3 图床外链" if str(payload["result"].get("image_mode") or "") == "s3_hotlink" else "微信原链"
+    send_telegram_message(
+        chat_id,
+        "\n".join(
+            [
+                f"转换完成：{title}",
+                f"同步路径：{sync_path}",
+                f"图片模式：{image_mode}",
+            ]
+        ),
+    )
+
+
+def extract_single_wechat_url(text: str) -> tuple[str | None, int]:
+    links = URL_PATTERN.findall(text or "")
+    if not links:
+        return None, 0
+    unique_links: list[str] = []
+    seen: set[str] = set()
+    for item in links:
+        if item in seen:
+            continue
+        seen.add(item)
+        unique_links.append(item)
+    return unique_links[0], len(unique_links)
+
+
+def _telegram_api_url(token: str, method: str) -> str:
+    return f"https://api.telegram.org/bot{token}/{method}"
+
+
 def _copy_job(job: dict[str, Any]) -> dict[str, Any]:
     copied: dict[str, Any] = {}
     for key, value in job.items():
@@ -369,3 +527,4 @@ def _copy_job(job: dict[str, Any]) -> dict[str, Any]:
 
 
 job_store = JobStore()
+_telegram_executor = ThreadPoolExecutor(max_workers=2)

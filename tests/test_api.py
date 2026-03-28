@@ -16,6 +16,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from app.main import app  # noqa: E402
 from app.auth import build_session_token, reset_login_rate_limit_state  # noqa: E402
 from app.config import get_settings, reset_admin_credentials  # noqa: E402
+from app.services import extract_single_wechat_url, parse_links  # noqa: E402
 
 
 class ApiTests(unittest.TestCase):
@@ -80,6 +81,7 @@ class ApiTests(unittest.TestCase):
         self.assertIn("系统状态", response.text)
         self.assertIn("任务摘要", response.text)
         self.assertIn("最近结果", response.text)
+        self.assertIn("粘贴", response.text)
         self.assertIn("原始 JSON", response.text)
         self.assertNotIn("输出目录", response.text)
         self.assertNotIn("输出目标", response.text)
@@ -110,8 +112,14 @@ class ApiTests(unittest.TestCase):
 
     def test_convert_success(self):
         self._login()
-        fake_result = {"title": "示例", "markdown_file": r"D:\obsidian\00_Inbox\01_示例\示例.md"}
-        with patch("app.api.routes.run_pipeline", return_value=fake_result):
+        fake_result = {
+            "status": "success",
+            "output_target": "local",
+            "result": {"title": "示例", "markdown_file": r"D:\obsidian\00_Inbox\01_示例\示例.md"},
+            "sync": {"status": "success", "target": "local", "markdown_file": r"D:\obsidian\00_Inbox\01_示例\示例.md"},
+            "local_artifacts": {"retained": False, "workdir": None},
+        }
+        with patch("app.api.routes.execute_single_conversion", return_value=fake_result):
             response = self.client.post("/api/convert", json={"url": "https://mp.weixin.qq.com/s/example"})
 
         self.assertEqual(response.status_code, 200)
@@ -149,8 +157,8 @@ class ApiTests(unittest.TestCase):
                 "fns_target_dir": "00_Inbox/微信公众号",
             }
             self.client.put("/api/admin/settings", json=payload)
-            with patch("app.api.routes.run_pipeline", return_value=fake_result):
-                with patch("app.api.routes.sync_result_to_output", return_value=fake_sync) as mocked_sync:
+            with patch("app.services.run_pipeline", return_value=fake_result):
+                with patch("app.services.sync_result_to_output", return_value=fake_sync) as mocked_sync:
                     response = self.client.post(
                         "/api/convert",
                         json={"url": "https://mp.weixin.qq.com/s/example"},
@@ -191,9 +199,9 @@ class ApiTests(unittest.TestCase):
                 "output_dir": str(article_dir),
             }
 
-        with patch("app.api.routes.run_pipeline", side_effect=fake_run_pipeline):
+        with patch("app.services.run_pipeline", side_effect=fake_run_pipeline):
             with patch(
-                "app.api.routes.sync_result_to_output",
+                "app.services.sync_result_to_output",
                 return_value={"status": "success", "target": "fns", "path": "00_Inbox/微信公众号/示例.md"},
             ):
                 response = self.client.post(
@@ -234,9 +242,9 @@ class ApiTests(unittest.TestCase):
                 "output_dir": str(article_dir),
             }
 
-        with patch("app.api.routes.run_pipeline", side_effect=fake_run_pipeline):
+        with patch("app.services.run_pipeline", side_effect=fake_run_pipeline):
             with patch(
-                "app.api.routes.sync_result_to_output",
+                "app.services.sync_result_to_output",
                 return_value={"status": "success", "target": "fns", "path": "00_Inbox/微信公众号/示例.md"},
             ):
                 response = self.client.post(
@@ -281,6 +289,27 @@ class ApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["job_id"], "job-file")
+
+    def test_parse_links_accepts_query_style_wechat_links(self):
+        links = parse_links(
+            urls_text="这里有一条微信文章：https://mp.weixin.qq.com/s?__biz=MzA4OTU3NzQ2OA==&mid=2661544116&idx=1&sn=abcd1234"
+        )
+
+        self.assertEqual(
+            links,
+            ["https://mp.weixin.qq.com/s?__biz=MzA4OTU3NzQ2OA==&mid=2661544116&idx=1&sn=abcd1234"],
+        )
+
+    def test_extract_single_wechat_url_accepts_query_style_wechat_link(self):
+        url, url_count = extract_single_wechat_url(
+            "这里是文章 https://mp.weixin.qq.com/s?__biz=MzA4OTU3NzQ2OA==&mid=2661544116&idx=1&sn=abcd1234"
+        )
+
+        self.assertEqual(
+            url,
+            "https://mp.weixin.qq.com/s?__biz=MzA4OTU3NzQ2OA==&mid=2661544116&idx=1&sn=abcd1234",
+        )
+        self.assertEqual(url_count, 1)
 
     def test_batch_uses_internal_workdir_root_for_fns(self):
         self._login()
@@ -330,6 +359,172 @@ class ApiTests(unittest.TestCase):
         self.assertIn("图片外链设置", text)
         self.assertIn("微信原链", text)
         self.assertIn("S3 图床外链", text)
+        self.assertIn("Telegram Bot", text)
+        self.assertIn("Bot Token", text)
+        self.assertIn("Webhook 对外基础地址", text)
+        self.assertIn("白名单 Chat ID", text)
+
+    def test_admin_settings_masks_telegram_secret_values(self):
+        self._login()
+        with patch("app.api.routes.configure_telegram_webhook", return_value={"status": "success", "message": "ok", "webhook_url": "https://app.example.com/api/integrations/telegram/webhook"}):
+            self.client.put(
+                "/api/admin/settings",
+                json={
+                    "telegram_enabled": True,
+                    "telegram_bot_token": "telegram-token-1",
+                    "telegram_webhook_public_base_url": "https://app.example.com",
+                    "telegram_webhook_secret": "telegram-secret-1",
+                    "telegram_allowed_chat_ids": "123456\n789000",
+                    "telegram_notify_on_complete": True,
+                },
+            )
+
+        response = self.client.get("/api/admin/settings")
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data["telegram_enabled"])
+        self.assertTrue(data["telegram_bot_token_configured"])
+        self.assertTrue(data["telegram_webhook_secret_configured"])
+        self.assertEqual(data["telegram_allowed_chat_ids_text"], "123456\n789000")
+        self.assertNotIn("telegram-token-1", str(data))
+        self.assertNotIn("telegram-secret-1", str(data))
+
+    def test_admin_settings_put_updates_telegram_runtime_config_and_registers_webhook(self):
+        self._login()
+        with patch("app.api.routes.configure_telegram_webhook", return_value={"status": "success", "message": "registered", "webhook_url": "https://app.example.com/api/integrations/telegram/webhook"}) as mocked_webhook:
+            response = self.client.put(
+                "/api/admin/settings",
+                json={
+                    "telegram_enabled": True,
+                    "telegram_bot_token": "telegram-token-2",
+                    "telegram_webhook_public_base_url": "https://app.example.com",
+                    "telegram_webhook_secret": "telegram-secret-2",
+                    "telegram_allowed_chat_ids": "10001,10002",
+                    "telegram_notify_on_complete": False,
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        mocked_webhook.assert_called_once()
+        saved_text = self.runtime_path.read_text(encoding="utf-8")
+        self.assertIn("\"enabled\": true", saved_text)
+        self.assertIn("\"allowed_chat_ids\": [", saved_text)
+        self.assertNotIn("telegram-token-2", saved_text)
+        self.assertNotIn("telegram-secret-2", saved_text)
+        data = response.json()["settings"]
+        self.assertEqual(data["telegram_webhook_status"], "success")
+        self.assertEqual(data["telegram_webhook_message"], "registered")
+
+    def test_telegram_webhook_rejects_invalid_secret(self):
+        self._login()
+        with patch("app.api.routes.configure_telegram_webhook", return_value={"status": "success", "message": "registered", "webhook_url": "https://app.example.com/api/integrations/telegram/webhook"}):
+            self.client.put(
+                "/api/admin/settings",
+                json={
+                    "telegram_enabled": True,
+                    "telegram_bot_token": "telegram-token",
+                    "telegram_webhook_public_base_url": "https://app.example.com",
+                    "telegram_webhook_secret": "secret-123",
+                    "telegram_allowed_chat_ids": "123456",
+                },
+            )
+
+        response = self.client.post(
+            "/api/integrations/telegram/webhook",
+            headers={"X-Telegram-Bot-Api-Secret-Token": "wrong-secret"},
+            json={"message": {"chat": {"id": 123456}, "text": "https://mp.weixin.qq.com/s/example"}},
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_telegram_webhook_ignores_non_whitelist_chat(self):
+        self._login()
+        with patch("app.api.routes.configure_telegram_webhook", return_value={"status": "success", "message": "registered", "webhook_url": "https://app.example.com/api/integrations/telegram/webhook"}):
+            self.client.put(
+                "/api/admin/settings",
+                json={
+                    "telegram_enabled": True,
+                    "telegram_bot_token": "telegram-token",
+                    "telegram_webhook_public_base_url": "https://app.example.com",
+                    "telegram_webhook_secret": "secret-123",
+                    "telegram_allowed_chat_ids": "123456",
+                },
+            )
+
+        with patch("app.api.routes.send_telegram_message") as mocked_send:
+            response = self.client.post(
+                "/api/integrations/telegram/webhook",
+                headers={"X-Telegram-Bot-Api-Secret-Token": "secret-123"},
+                json={"message": {"chat": {"id": 999999}, "text": "https://mp.weixin.qq.com/s/example"}},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "ignored")
+        mocked_send.assert_not_called()
+
+    def test_telegram_webhook_accepts_single_link_and_submits_background_task(self):
+        self._login()
+        with patch("app.api.routes.configure_telegram_webhook", return_value={"status": "success", "message": "registered", "webhook_url": "https://app.example.com/api/integrations/telegram/webhook"}):
+            self.client.put(
+                "/api/admin/settings",
+                json={
+                    "fns_base_url": "https://fns.example.com",
+                    "fns_token": "fns-token",
+                    "fns_vault": "obsidian",
+                    "telegram_enabled": True,
+                    "telegram_bot_token": "telegram-token",
+                    "telegram_webhook_public_base_url": "https://app.example.com",
+                    "telegram_webhook_secret": "secret-123",
+                    "telegram_allowed_chat_ids": "123456",
+                    "telegram_notify_on_complete": True,
+                },
+            )
+
+        with patch("app.api.routes.send_telegram_message") as mocked_send:
+            with patch("app.api.routes.submit_telegram_convert_task") as mocked_submit:
+                response = self.client.post(
+                    "/api/integrations/telegram/webhook",
+                    headers={"X-Telegram-Bot-Api-Secret-Token": "secret-123"},
+                    json={"message": {"chat": {"id": 123456}, "text": "https://mp.weixin.qq.com/s/example"}},
+                )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "accepted")
+        mocked_send.assert_called_once()
+        mocked_submit.assert_called_once()
+
+    def test_telegram_webhook_replies_error_for_multiple_links(self):
+        self._login()
+        with patch("app.api.routes.configure_telegram_webhook", return_value={"status": "success", "message": "registered", "webhook_url": "https://app.example.com/api/integrations/telegram/webhook"}):
+            self.client.put(
+                "/api/admin/settings",
+                json={
+                    "telegram_enabled": True,
+                    "telegram_bot_token": "telegram-token",
+                    "telegram_webhook_public_base_url": "https://app.example.com",
+                    "telegram_webhook_secret": "secret-123",
+                    "telegram_allowed_chat_ids": "123456",
+                },
+            )
+
+        with patch("app.api.routes.send_telegram_message") as mocked_send:
+            with patch("app.api.routes.submit_telegram_convert_task") as mocked_submit:
+                response = self.client.post(
+                    "/api/integrations/telegram/webhook",
+                    headers={"X-Telegram-Bot-Api-Secret-Token": "secret-123"},
+                    json={
+                        "message": {
+                            "chat": {"id": 123456},
+                            "text": "https://mp.weixin.qq.com/s/one https://mp.weixin.qq.com/s/two",
+                        }
+                    },
+                )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "replied")
+        mocked_send.assert_called_once()
+        mocked_submit.assert_not_called()
 
     def test_settings_requires_login_redirect(self):
         response = self.client.get("/settings", follow_redirects=False)

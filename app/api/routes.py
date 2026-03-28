@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Cookie, File, HTTPException, Request, Response, UploadFile
+from fastapi import APIRouter, Cookie, File, Header, HTTPException, Request, Response, UploadFile
 
 from app.auth import (
     SESSION_COOKIE_NAME,
@@ -15,21 +15,29 @@ from app.auth import (
     verify_password,
     verify_session_token,
 )
-from app.config import build_admin_settings_payload, get_settings, save_runtime_config, update_password
-from app.core.pipeline import run_pipeline
+from app.config import (
+    build_admin_settings_payload,
+    get_settings,
+    save_runtime_config,
+    update_password,
+    update_telegram_webhook_state,
+)
 from app.services import (
     build_config_payload,
     build_output_target,
-    cleanup_internal_workdir,
     check_fns_status,
-    create_internal_workdir,
+    configure_telegram_webhook,
+    execute_single_conversion,
+    extract_single_wechat_url,
     ensure_runtime_environment,
     get_internal_workdir_root,
     job_store,
     normalize_output_dir,
     parse_links,
     read_uploaded_text,
-    sync_result_to_output,
+    send_telegram_message,
+    submit_telegram_convert_task,
+    TELEGRAM_SECRET_HEADER,
 )
 
 
@@ -55,37 +63,15 @@ async def convert_article(
     if not url:
         raise HTTPException(status_code=400, detail="缺少微信文章链接 url")
 
-    timeout = int(payload.get("timeout") or get_settings().default_timeout)
-    save_html = _parse_bool(payload.get("save_html"))
-    output_target = build_output_target(payload.get("output_target"))
-    settings = get_settings()
-    workspace: Path | None = None
-    output_dir = normalize_output_dir(payload.get("output_dir"))
-    if output_target == "fns":
-        workspace = create_internal_workdir("single")
-        output_dir = workspace
-    ensure_runtime_environment()
-
     try:
-        result = run_pipeline(url=url, output_base_dir=output_dir, save_html=save_html, timeout=timeout)
-        sync = sync_result_to_output(result, output_target=output_target)
-        local_artifacts = {"retained": False, "workdir": None}
-        if workspace is not None:
-            if settings.cleanup_temp_on_success:
-                cleanup_internal_workdir(workspace)
-            else:
-                local_artifacts = {"retained": True, "workdir": str(workspace)}
+        return execute_single_conversion(
+            url=url,
+            timeout=int(payload.get("timeout") or get_settings().default_timeout),
+            save_html=_parse_bool(payload.get("save_html")),
+            output_target=payload.get("output_target"),
+        )
     except Exception as error:
-        cleanup_internal_workdir(workspace)
         raise HTTPException(status_code=400, detail=str(error)) from error
-
-    return {
-        "status": "success",
-        "output_target": output_target,
-        "result": result,
-        "sync": sync,
-        "local_artifacts": local_artifacts,
-    }
 
 
 @router.post("/api/batch")
@@ -212,12 +198,20 @@ async def update_admin_settings(
         clear_fields = []
     try:
         save_runtime_config(payload, clear_fields=clear_fields)
+        webhook_state = configure_telegram_webhook()
+        if isinstance(webhook_state, dict):
+            update_telegram_webhook_state(
+                str(webhook_state.get("status") or "inactive"),
+                str(webhook_state.get("message") or ""),
+                webhook_url=str(webhook_state.get("webhook_url") or ""),
+            )
     except Exception as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
     return {
         "status": "success",
         "settings": build_admin_settings_payload(),
+        "telegram_webhook": webhook_state,
     }
 
 
@@ -251,6 +245,44 @@ async def update_admin_password(
         max_age=7 * 24 * 60 * 60,
     )
     return {"status": "success"}
+
+
+@router.post("/api/integrations/telegram/webhook")
+async def telegram_webhook(
+    request: Request,
+    telegram_secret: str | None = Header(default=None, alias=TELEGRAM_SECRET_HEADER),
+) -> dict[str, Any]:
+    settings = get_settings()
+    if not settings.telegram_enabled:
+        return {"status": "ignored", "reason": "telegram_disabled"}
+    if not settings.telegram_webhook_secret or telegram_secret != settings.telegram_webhook_secret:
+        raise HTTPException(status_code=403, detail="Telegram webhook secret 无效")
+
+    payload = await request.json()
+    message = payload.get("message") if isinstance(payload, dict) else None
+    if not isinstance(message, dict):
+        return {"status": "ignored", "reason": "no_message"}
+
+    chat = message.get("chat") if isinstance(message.get("chat"), dict) else {}
+    chat_id = str(chat.get("id") or "").strip()
+    if not chat_id or chat_id not in settings.telegram_allowed_chat_ids:
+        return {"status": "ignored", "reason": "chat_not_allowed"}
+
+    text = str(message.get("text") or "").strip()
+    url, url_count = extract_single_wechat_url(text)
+    if url_count == 0 or not url:
+        send_telegram_message(chat_id, "未识别到可用的微信文章链接，请直接发送一条公众号文章链接。")
+        return {"status": "replied", "reason": "no_link"}
+    if url_count > 1:
+        send_telegram_message(chat_id, "一次只支持一篇文章，请只发送一条微信文章链接。")
+        return {"status": "replied", "reason": "multiple_links"}
+    if not settings.fns_enabled:
+        send_telegram_message(chat_id, "当前 FNS 尚未配置完成，无法执行 Telegram 单篇转换。")
+        return {"status": "replied", "reason": "fns_not_configured"}
+
+    send_telegram_message(chat_id, "已接收，开始转换。")
+    submit_telegram_convert_task(url, chat_id)
+    return {"status": "accepted"}
 
 
 def _parse_bool(value: Any) -> bool:
