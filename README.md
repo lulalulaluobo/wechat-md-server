@@ -1,5 +1,7 @@
 # wechat-md-server
 
+[中文说明](README.zh-CN.md)
+
 Local FastAPI service for converting WeChat public articles into Markdown and syncing them to Fast Note Sync for Obsidian.
 
 ## Run

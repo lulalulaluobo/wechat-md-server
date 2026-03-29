@@ -37,6 +37,7 @@ from app.services import (
     read_uploaded_text,
     send_telegram_message,
     submit_telegram_convert_task,
+    test_ai_connectivity,
     TELEGRAM_SECRET_HEADER,
 )
 
@@ -69,6 +70,7 @@ async def convert_article(
             timeout=int(payload.get("timeout") or get_settings().default_timeout),
             save_html=_parse_bool(payload.get("save_html")),
             output_target=payload.get("output_target"),
+            ai_enabled=_read_optional_bool(payload.get("ai_enabled")),
         )
     except Exception as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
@@ -101,6 +103,7 @@ async def convert_batch(
         save_html=save_html,
         timeout=timeout,
         output_target=output_target,
+        ai_enabled=_read_optional_bool(payload.get("ai_enabled")),
     )
     return {
         "status": "queued",
@@ -184,6 +187,24 @@ async def get_admin_fns_status(
 ) -> dict[str, Any]:
     _require_access(session_cookie)
     return check_fns_status()
+
+
+@router.post("/api/admin/ai-test")
+async def post_admin_ai_test(
+    request: Request,
+    session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
+) -> dict[str, Any]:
+    _require_access(session_cookie)
+    payload = await _read_convert_payload(request)
+    try:
+        return test_ai_connectivity(
+            base_url=str(payload.get("base_url") or "").strip(),
+            api_key=str(payload.get("api_key") or "").strip(),
+            model=str(payload.get("model") or "").strip(),
+            timeout=int(payload.get("timeout") or get_settings().default_timeout),
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
 
 
 @router.put("/api/admin/settings")
@@ -291,6 +312,12 @@ def _parse_bool(value: Any) -> bool:
     if value is None:
         return False
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _read_optional_bool(value: Any) -> bool | None:
+    if value is None or value == "":
+        return None
+    return _parse_bool(value)
 
 
 async def _read_convert_payload(request: Request) -> dict[str, Any]:

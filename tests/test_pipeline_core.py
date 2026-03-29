@@ -519,6 +519,90 @@ class ImageUploadPipelineTests(unittest.TestCase):
         self.assertIn("原文链接:", formatted)
         self.assertEqual(summary.get("removed_promotion_blocks"), 1)
 
+    def test_parser_outputs_markdown_table_with_header_separator(self):
+        module = load_pipeline_module()
+
+        class DummyDownloader:
+            def download(self, source):
+                return None
+
+        parser = module.HTMLToMarkdownParser(DummyDownloader())
+        parser.feed(
+            """
+            <table>
+              <tr><th>工具</th><th>用途</th></tr>
+              <tr><td>search_workflows</td><td>按名称/描述搜索工作流</td></tr>
+            </table>
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            formatted, _ = module.format_markdown(parser.get_markdown(), Path(temp_dir))
+
+        self.assertIn("| 工具 | 用途 |", formatted)
+        self.assertIn("| --- | --- |", formatted)
+        self.assertIn("| search_workflows | 按名称/描述搜索工作流 |", formatted)
+
+    def test_format_markdown_converts_single_backtick_multiline_block_to_fenced_code(self):
+        module = load_pipeline_module()
+        markdown = """`
+
+{
+  "mcpServers": {
+    "n8n": {
+      "command": "npx"
+    }
+  }
+}
+
+`
+"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            formatted, _ = module.format_markdown(markdown, Path(temp_dir))
+
+        self.assertIn("```json", formatted)
+        self.assertIn('"mcpServers"', formatted)
+        self.assertIn("\n```", formatted)
+        self.assertNotIn("\n`\n", formatted)
+
+    def test_format_markdown_converts_inline_opened_multiline_backtick_block_to_fenced_code(self):
+        module = load_pipeline_module()
+        markdown = """开发工具类客户端用 Access Token 方式，在 config 里加一段：`
+
+{
+"mcpServers": {
+"n8n": {
+"command": "npx"
+}
+}
+}`
+"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            formatted, _ = module.format_markdown(markdown, Path(temp_dir))
+
+        self.assertIn("开发工具类客户端用 Access Token 方式，在 config 里加一段：", formatted)
+        self.assertIn("```json", formatted)
+        self.assertIn('"mcpServers"', formatted)
+        self.assertNotIn("加一段：`", formatted)
+        self.assertNotIn("}`", formatted)
+
+    def test_format_markdown_converts_plain_text_multiline_backtick_span_to_fenced_text(self):
+        module = load_pipeline_module()
+        markdown = """这是普通说明：`
+
+这是一段普通说明文字
+`
+"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            formatted, _ = module.format_markdown(markdown, Path(temp_dir))
+
+        self.assertIn("这是普通说明：", formatted)
+        self.assertIn("```text", formatted)
+        self.assertIn("这是一段普通说明文字", formatted)
+
 
 if __name__ == "__main__":
     unittest.main()

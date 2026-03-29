@@ -35,6 +35,7 @@
       <div class="status-chip"><span class="dot" id="dot-fns"></span><span id="chip-fns">FNS 未检测</span></div>
       <div class="status-chip"><span id="chip-vault">Vault: -</span></div>
       <div class="status-chip"><span id="chip-image">图片: 微信原链</span></div>
+      <div class="status-chip"><span id="chip-ai">AI: 未启用</span></div>
     </div>
     </div>
 
@@ -65,6 +66,10 @@
             </label>
           </div>
         </div>
+        <label class="check-row" style="margin-top:10px;">
+          <input id="single-ai-enabled" type="checkbox">
+          本次启用 AI 润色
+        </label>
       </div>
 
       <div class="action-row mt-0">
@@ -107,6 +112,10 @@
             </label>
           </div>
         </div>
+        <label class="check-row" style="margin-top:10px;">
+          <input id="batch-ai-enabled" type="checkbox">
+          本次启用 AI 润色
+        </label>
       </div>
 
       <div class="action-row mt-0">
@@ -132,6 +141,11 @@
       return mode === "s3_hotlink" ? "S3 图床外链" : "微信原链";
     }
 
+    function aiModeLabel(config) {
+      if (!config?.ai_enabled) return "未启用";
+      return `已启用 / ${config.ai_model || "-"}`;
+    }
+
     function extractWechatLink(text) {
       const matches = String(text || "").match(/https?:\/\/mp\.weixin\.qq\.com\/s(?:[/?][^\s)>]+)?/ig) || [];
       return matches[0] || "";
@@ -145,7 +159,10 @@
         AdminUI.setText("chip-fns", `FNS: ${data.fns_base_url || "未配置"}`);
         AdminUI.setText("chip-vault", `Vault: ${data.fns_vault || "未配置"}`);
         AdminUI.setText("chip-image", `图片: ${imageModeLabel(data.image_mode)}`);
+        AdminUI.setText("chip-ai", `AI: ${aiModeLabel(data)}`);
         document.getElementById("dot-fns").className = `dot ${data.fns_enabled ? "ok" : "warn"}`;
+        document.getElementById("single-ai-enabled").checked = Boolean(data.ai_enabled);
+        document.getElementById("batch-ai-enabled").checked = Boolean(data.ai_enabled);
       } catch (err) {
         AdminUI.setText("chip-fns", "FNS: 读取失败");
         document.getElementById("dot-fns").className = "dot err";
@@ -239,6 +256,7 @@
             url,
             timeout: Number(document.getElementById("single-timeout").value || 30),
             save_html: document.getElementById("single-save-html").checked,
+            ai_enabled: document.getElementById("single-ai-enabled").checked,
           }),
         });
         const data = await res.json();
@@ -252,6 +270,7 @@
               { label: "同步路径", value: data.sync?.path || data.sync?.markdown_file || "-" },
               { label: "同步类型", value: data.sync?.target || data.output_target || "-" },
               { label: "图片模式", value: imageModeLabel(data.result?.image_mode) },
+              { label: "AI 润色", value: data.ai_polish?.enabled ? `${data.ai_polish?.status || "-"} / ${data.ai_polish?.model || "-"}` : "未启用" },
             ],
             json: data,
           }));
@@ -310,6 +329,7 @@
       formData.append("urls_text", document.getElementById("batch-urls").value);
       formData.append("timeout", document.getElementById("batch-timeout").value || "30");
       formData.append("save_html", document.getElementById("batch-save-html").checked ? "true" : "false");
+      formData.append("ai_enabled", document.getElementById("batch-ai-enabled").checked ? "true" : "false");
       const fileInput = document.getElementById("batch-file");
       if (fileInput.files[0]) formData.append("file", fileInput.files[0]);
 

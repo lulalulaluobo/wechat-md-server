@@ -21,6 +21,45 @@ DEFAULT_FNS_TARGET_DIR = "00_Inbox/微信公众号"
 DEFAULT_IMAGE_MODE = "wechat_hotlink"
 IMAGE_MODE_VALUES = {"wechat_hotlink", "s3_hotlink"}
 DEFAULT_TELEGRAM_NOTIFY_ON_COMPLETE = True
+DEFAULT_AI_MODEL = "gpt-5.4-mini"
+DEFAULT_AI_PROMPT_TEMPLATE = """你是一个 Obsidian 笔记解释器。请基于提供的标题、作者、原文链接和清洗后的 Markdown 正文，提炼结构化笔记变量。
+
+请只返回 JSON 对象，不要输出 Markdown，不要额外解释。JSON 字段固定为：
+- summary: 一句话总结，说明这篇文章解决什么问题或传达什么核心观点
+- tags: 3 到 5 个中文或英文 tag，使用数组返回，每个 tag 不要包含空格
+- my_understand: 2 到 4 句话，说明阅读后的理解、适用场景或个人启发
+- body_polish: 可选的补充块内容。如果没有额外补充，返回空字符串
+
+上下文：
+- 标题：{{title}}
+- 作者：{{author}}
+- 原文链接：{{url}}
+- 日期：{{date}}
+
+正文：
+{{content}}
+"""
+DEFAULT_AI_FRONTMATTER_TEMPLATE = """---
+title: {{title}}
+author: {{author}}
+source: {{url}}
+created_day: {{date}}
+summary: {{summary}}
+tags: {{tags}}
+---
+"""
+DEFAULT_AI_BODY_TEMPLATE = """> [!summary] 一句话总结
+> {{summary}}
+
+---
+
+> [!tip] 我的理解
+> {{my_understand}}
+
+{{body_polish}}
+"""
+DEFAULT_AI_CONTEXT_TEMPLATE = "{{content}}"
+AI_TEMPLATE_SOURCE_VALUES = {"manual", "clipper_import"}
 
 
 @dataclass(frozen=True)
@@ -54,6 +93,16 @@ class Settings:
     telegram_notify_on_complete: bool = DEFAULT_TELEGRAM_NOTIFY_ON_COMPLETE
     telegram_webhook_status: str = "inactive"
     telegram_webhook_message: str = ""
+    ai_enabled: bool = False
+    ai_base_url: str | None = None
+    ai_api_key: str | None = None
+    ai_model: str = DEFAULT_AI_MODEL
+    ai_prompt_template: str = DEFAULT_AI_PROMPT_TEMPLATE
+    ai_frontmatter_template: str = DEFAULT_AI_FRONTMATTER_TEMPLATE
+    ai_body_template: str = DEFAULT_AI_BODY_TEMPLATE
+    ai_context_template: str = DEFAULT_AI_CONTEXT_TEMPLATE
+    ai_allow_body_polish: bool = False
+    ai_template_source: str = "manual"
 
     @property
     def fns_enabled(self) -> bool:
@@ -90,6 +139,18 @@ class Settings:
             return None
         return f"{self.telegram_webhook_public_base_url.rstrip('/')}/api/integrations/telegram/webhook"
 
+    @property
+    def ai_configured(self) -> bool:
+        return bool(
+            self.ai_base_url
+            and self.ai_api_key
+            and self.ai_model
+            and self.ai_prompt_template.strip()
+            and self.ai_frontmatter_template.strip()
+            and self.ai_body_template.strip()
+            and self.ai_context_template.strip()
+        )
+
 
 FNS_FIELDS = {
     "fns_base_url",
@@ -122,6 +183,18 @@ TELEGRAM_TEXT_FIELD_MAP = {
     "telegram_webhook_status": "webhook_status",
     "telegram_webhook_message": "webhook_message",
 }
+AI_BOOL_FIELDS = {"ai_enabled", "ai_allow_body_polish"}
+AI_TEXT_FIELDS = {
+    "ai_base_url",
+    "ai_model",
+    "ai_prompt_template",
+    "ai_frontmatter_template",
+    "ai_body_template",
+    "ai_context_template",
+    "ai_template_source",
+}
+AI_SECRET_FIELDS = {"ai_api_key"}
+SECRET_FIELDS = SECRET_FIELDS | AI_SECRET_FIELDS
 
 
 def get_runtime_config_path() -> Path:
@@ -167,6 +240,8 @@ def save_runtime_config(payload: dict[str, Any], clear_fields: list[str] | None 
             telegram_settings["bot_token"] = ""
         elif field == "telegram_webhook_secret":
             telegram_settings["webhook_secret"] = ""
+        elif field == "ai_api_key":
+            user_settings["ai_api_key"] = ""
 
     for field in FNS_FIELDS:
         if field not in payload:
@@ -213,6 +288,19 @@ def save_runtime_config(payload: dict[str, Any], clear_fields: list[str] | None 
 
     if "telegram_allowed_chat_ids" in payload:
         telegram_settings["allowed_chat_ids"] = _normalize_chat_ids(payload.get("telegram_allowed_chat_ids"))
+
+    for field in AI_BOOL_FIELDS:
+        if field not in payload:
+            continue
+        user_settings[field] = _as_bool(payload.get(field), default=field == "ai_allow_body_polish")
+
+    for field in AI_TEXT_FIELDS | AI_SECRET_FIELDS:
+        if field not in payload:
+            continue
+        raw_value = payload.get(field)
+        if raw_value is None:
+            continue
+        user_settings[field] = str(raw_value)
 
     user_settings["image_storage"] = image_storage
     user_settings["telegram"] = telegram_settings
@@ -326,6 +414,18 @@ def build_admin_settings_payload() -> dict[str, Any]:
         "telegram_notify_on_complete": settings.telegram_notify_on_complete,
         "telegram_webhook_status": settings.telegram_webhook_status,
         "telegram_webhook_message": settings.telegram_webhook_message,
+        "ai_enabled": settings.ai_enabled,
+        "ai_configured": settings.ai_configured,
+        "ai_base_url": settings.ai_base_url or "",
+        "ai_api_key_configured": bool(settings.ai_api_key),
+        "ai_api_key_masked": _mask_secret(settings.ai_api_key),
+        "ai_model": settings.ai_model,
+        "ai_prompt_template": settings.ai_prompt_template,
+        "ai_frontmatter_template": settings.ai_frontmatter_template,
+        "ai_body_template": settings.ai_body_template,
+        "ai_context_template": settings.ai_context_template,
+        "ai_allow_body_polish": settings.ai_allow_body_polish,
+        "ai_template_source": settings.ai_template_source,
         "runtime_overrides": runtime_overrides,
     }
 
@@ -391,6 +491,16 @@ def get_settings() -> Settings:
     )
     telegram_webhook_status = str(telegram.get("webhook_status") or "inactive").strip() or "inactive"
     telegram_webhook_message = str(telegram.get("webhook_message") or "").strip()
+    ai_enabled = _as_bool(runtime_user_settings.get("ai_enabled"), default=False)
+    ai_base_url = str(runtime_user_settings.get("ai_base_url") or os.environ.get("WECHAT_MD_AI_BASE_URL") or "").strip() or None
+    ai_api_key = str(runtime_user_settings.get("ai_api_key") or os.environ.get("WECHAT_MD_AI_API_KEY") or "").strip() or None
+    ai_model = str(runtime_user_settings.get("ai_model") or os.environ.get("WECHAT_MD_AI_MODEL") or DEFAULT_AI_MODEL).strip() or DEFAULT_AI_MODEL
+    ai_prompt_template = str(runtime_user_settings.get("ai_prompt_template") or os.environ.get("WECHAT_MD_AI_PROMPT_TEMPLATE") or DEFAULT_AI_PROMPT_TEMPLATE)
+    ai_frontmatter_template = str(runtime_user_settings.get("ai_frontmatter_template") or os.environ.get("WECHAT_MD_AI_FRONTMATTER_TEMPLATE") or DEFAULT_AI_FRONTMATTER_TEMPLATE)
+    ai_body_template = str(runtime_user_settings.get("ai_body_template") or os.environ.get("WECHAT_MD_AI_BODY_TEMPLATE") or DEFAULT_AI_BODY_TEMPLATE)
+    ai_context_template = str(runtime_user_settings.get("ai_context_template") or os.environ.get("WECHAT_MD_AI_CONTEXT_TEMPLATE") or DEFAULT_AI_CONTEXT_TEMPLATE)
+    ai_allow_body_polish = _as_bool(runtime_user_settings.get("ai_allow_body_polish"), default=False)
+    ai_template_source = _normalize_ai_template_source(runtime_user_settings.get("ai_template_source"))
 
     return Settings(
         default_output_dir=output_dir,
@@ -421,6 +531,16 @@ def get_settings() -> Settings:
         telegram_notify_on_complete=telegram_notify_on_complete,
         telegram_webhook_status=telegram_webhook_status,
         telegram_webhook_message=telegram_webhook_message,
+        ai_enabled=ai_enabled,
+        ai_base_url=ai_base_url.rstrip("/") if ai_base_url else None,
+        ai_api_key=ai_api_key,
+        ai_model=ai_model,
+        ai_prompt_template=ai_prompt_template,
+        ai_frontmatter_template=ai_frontmatter_template,
+        ai_body_template=ai_body_template,
+        ai_context_template=ai_context_template,
+        ai_allow_body_polish=ai_allow_body_polish,
+        ai_template_source=ai_template_source,
     )
 
 
@@ -475,6 +595,20 @@ def _normalize_user_settings(raw_settings: Any) -> dict[str, Any]:
         "fns_vault": str(source.get("fns_vault") or "").strip(),
         "fns_target_dir": str(source.get("fns_target_dir") or DEFAULT_FNS_TARGET_DIR).strip() or DEFAULT_FNS_TARGET_DIR,
         "cleanup_temp_on_success": _as_bool(source.get("cleanup_temp_on_success"), default=True),
+        "ai_enabled": _as_bool(source.get("ai_enabled"), default=False),
+        "ai_base_url": str(source.get("ai_base_url") or "").strip(),
+        "ai_api_key": _load_secret_value(
+            encrypted_value=source.get("ai_api_key_encrypted"),
+            plaintext_value=source.get("ai_api_key"),
+            field_name="ai_api_key",
+        ),
+        "ai_model": str(source.get("ai_model") or DEFAULT_AI_MODEL).strip() or DEFAULT_AI_MODEL,
+        "ai_prompt_template": str(source.get("ai_prompt_template") or DEFAULT_AI_PROMPT_TEMPLATE),
+        "ai_frontmatter_template": str(source.get("ai_frontmatter_template") or DEFAULT_AI_FRONTMATTER_TEMPLATE),
+        "ai_body_template": str(source.get("ai_body_template") or DEFAULT_AI_BODY_TEMPLATE),
+        "ai_context_template": str(source.get("ai_context_template") or DEFAULT_AI_CONTEXT_TEMPLATE),
+        "ai_allow_body_polish": _as_bool(source.get("ai_allow_body_polish"), default=False),
+        "ai_template_source": _normalize_ai_template_source(source.get("ai_template_source")),
         "image_mode": _normalize_image_mode(source.get("image_mode")),
         "image_storage": {
             "provider": str(image_storage_source.get("provider") or "s3").strip() or "s3",
@@ -535,6 +669,16 @@ def _serialize_runtime_config(data: dict[str, Any]) -> dict[str, Any]:
             "fns_vault": str(user_settings.get("fns_vault") or "").strip(),
             "fns_target_dir": str(user_settings.get("fns_target_dir") or DEFAULT_FNS_TARGET_DIR).strip() or DEFAULT_FNS_TARGET_DIR,
             "cleanup_temp_on_success": _as_bool(user_settings.get("cleanup_temp_on_success"), default=True),
+            "ai_enabled": _as_bool(user_settings.get("ai_enabled"), default=False),
+            "ai_base_url": str(user_settings.get("ai_base_url") or "").strip(),
+            "ai_api_key_encrypted": encrypt_secret(str(user_settings.get("ai_api_key") or "")),
+            "ai_model": str(user_settings.get("ai_model") or DEFAULT_AI_MODEL).strip() or DEFAULT_AI_MODEL,
+            "ai_prompt_template": str(user_settings.get("ai_prompt_template") or DEFAULT_AI_PROMPT_TEMPLATE),
+            "ai_frontmatter_template": str(user_settings.get("ai_frontmatter_template") or DEFAULT_AI_FRONTMATTER_TEMPLATE),
+            "ai_body_template": str(user_settings.get("ai_body_template") or DEFAULT_AI_BODY_TEMPLATE),
+            "ai_context_template": str(user_settings.get("ai_context_template") or DEFAULT_AI_CONTEXT_TEMPLATE),
+            "ai_allow_body_polish": _as_bool(user_settings.get("ai_allow_body_polish"), default=False),
+            "ai_template_source": _normalize_ai_template_source(user_settings.get("ai_template_source")),
             "image_mode": _normalize_image_mode(user_settings.get("image_mode")),
             "image_storage": {
                 "provider": str(image_storage.get("provider") or "s3").strip() or "s3",
@@ -585,6 +729,11 @@ def _normalize_image_mode(value: Any) -> str:
     return normalized if normalized in IMAGE_MODE_VALUES else DEFAULT_IMAGE_MODE
 
 
+def _normalize_ai_template_source(value: Any) -> str:
+    normalized = str(value or "manual").strip()
+    return normalized if normalized in AI_TEMPLATE_SOURCE_VALUES else "manual"
+
+
 def _mask_secret(value: str | None) -> str:
     if not value:
         return ""
@@ -598,6 +747,29 @@ def _validate_runtime_config(data: dict[str, Any]) -> None:
     base_url = str(user_settings.get("fns_base_url") or "").strip()
     if base_url and not base_url.startswith(("http://", "https://")):
         raise ValueError("FNS 基础地址必须以 http:// 或 https:// 开头")
+
+    ai_enabled = _as_bool(user_settings.get("ai_enabled"), default=False)
+    ai_base_url = str(user_settings.get("ai_base_url") or "").strip()
+    if ai_base_url and not ai_base_url.startswith(("http://", "https://")):
+        raise ValueError("AI Base URL 必须以 http:// 或 https:// 开头")
+    if ai_enabled:
+        missing_ai = []
+        if not ai_base_url:
+            missing_ai.append("ai_base_url")
+        if not str(user_settings.get("ai_api_key") or "").strip():
+            missing_ai.append("ai_api_key")
+        if not str(user_settings.get("ai_model") or "").strip():
+            missing_ai.append("ai_model")
+        if not str(user_settings.get("ai_prompt_template") or "").strip():
+            missing_ai.append("ai_prompt_template")
+        if not str(user_settings.get("ai_frontmatter_template") or "").strip():
+            missing_ai.append("ai_frontmatter_template")
+        if not str(user_settings.get("ai_body_template") or "").strip():
+            missing_ai.append("ai_body_template")
+        if not str(user_settings.get("ai_context_template") or "").strip():
+            missing_ai.append("ai_context_template")
+        if missing_ai:
+            raise ValueError("AI 润色配置不完整，缺少字段: " + ", ".join(missing_ai))
 
     telegram = user_settings["telegram"]
     telegram_webhook_public_base_url = str(telegram.get("webhook_public_base_url") or "").strip()

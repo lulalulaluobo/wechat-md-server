@@ -6,12 +6,14 @@ import shutil
 import threading
 import time
 import uuid
+import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
 import requests
 
+from app.ai_polish import apply_ai_polish_to_markdown
 from app.config import get_settings, update_telegram_webhook_state
 from app.core.pipeline import run_pipeline, sanitize_filename
 
@@ -52,6 +54,7 @@ class JobStore:
         save_html: bool,
         timeout: int,
         output_target: str,
+        ai_enabled: bool | None = None,
     ) -> dict[str, Any]:
         job_id = uuid.uuid4().hex
         payload = {
@@ -65,12 +68,13 @@ class JobStore:
             "save_html": save_html,
             "timeout": timeout,
             "output_target": output_target,
+            "ai_enabled": bool(ai_enabled),
             "results": [],
             "errors": [],
         }
         with self._lock:
             self._jobs[job_id] = payload
-        self._executor.submit(self._run_batch_job, job_id, urls, output_dir, save_html, timeout, output_target)
+        self._executor.submit(self._run_batch_job, job_id, urls, output_dir, save_html, timeout, output_target, ai_enabled)
         return payload.copy()
 
     def get_job(self, job_id: str) -> dict[str, Any] | None:
@@ -86,39 +90,30 @@ class JobStore:
         save_html: bool,
         timeout: int,
         output_target: str,
+        ai_enabled: bool | None,
     ) -> None:
         ensure_runtime_environment()
-        settings = get_settings()
         self._update(job_id, status="running")
         for url in urls:
-            workspace: Path | None = None
             try:
-                active_output_dir = output_dir
-                if output_target == "fns":
-                    workspace = create_internal_workdir(f"batch-{job_id[:8]}")
-                    active_output_dir = workspace
-
-                result = run_pipeline(url=url, output_base_dir=active_output_dir, save_html=save_html, timeout=timeout)
-                sync = sync_result_to_output(result, output_target=output_target)
-                local_artifacts = {"retained": False, "workdir": None}
-                if workspace is not None:
-                    if settings.cleanup_temp_on_success:
-                        cleanup_internal_workdir(workspace)
-                    else:
-                        local_artifacts = {"retained": True, "workdir": str(workspace)}
+                conversion = _run_single_conversion(
+                    url=url,
+                    timeout=timeout,
+                    save_html=save_html,
+                    output_target=output_target,
+                    ai_enabled=ai_enabled,
+                    batch_workspace_root=output_dir if output_target != "fns" else None,
+                    workspace_prefix=f"batch-{job_id[:8]}",
+                )
                 self._append_result(
                     job_id,
                     {
                         "url": url,
                         "status": "success",
-                        "result": result,
-                        "sync": sync,
-                        "output_target": output_target,
-                        "local_artifacts": local_artifacts,
+                        **conversion,
                     },
                 )
             except Exception as error:  # pragma: no cover - exercised in integration flow
-                cleanup_internal_workdir(workspace)
                 self._append_result(job_id, {"url": url, "status": "error", "error": str(error)})
         self._finalize(job_id)
 
@@ -153,16 +148,38 @@ def execute_single_conversion(
     timeout: int | None = None,
     save_html: bool = False,
     output_target: str | None = None,
+    ai_enabled: bool | None = None,
+) -> dict[str, Any]:
+    return _run_single_conversion(
+        url=url,
+        timeout=int(timeout or get_settings().default_timeout),
+        save_html=save_html,
+        output_target=output_target,
+        ai_enabled=ai_enabled,
+        workspace_prefix="single",
+    )
+
+
+def _run_single_conversion(
+    *,
+    url: str,
+    timeout: int,
+    save_html: bool,
+    output_target: str | None,
+    ai_enabled: bool | None,
+    batch_workspace_root: Path | None = None,
+    workspace_prefix: str = "single",
 ) -> dict[str, Any]:
     settings = get_settings()
     normalized_target = build_output_target(output_target, settings)
     normalized_timeout = int(timeout or settings.default_timeout)
+    normalized_ai_enabled = resolve_ai_enabled(ai_enabled, settings)
     ensure_runtime_environment()
 
     workspace: Path | None = None
-    output_dir = normalize_output_dir(None)
+    output_dir = batch_workspace_root or normalize_output_dir(None)
     if normalized_target == "fns":
-        workspace = create_internal_workdir("single")
+        workspace = create_internal_workdir(workspace_prefix)
         output_dir = workspace
 
     try:
@@ -172,6 +189,28 @@ def execute_single_conversion(
             save_html=save_html,
             timeout=normalized_timeout,
         )
+        ai_polish = {
+            "enabled": normalized_ai_enabled,
+            "status": "skipped",
+            "model": settings.ai_model if normalized_ai_enabled else None,
+            "template_applied": False,
+            "message": "AI 润色未启用",
+        }
+        if normalized_ai_enabled:
+            try:
+                ai_polish = apply_ai_polish_to_result(
+                    result=result,
+                    url=url,
+                    timeout=normalized_timeout,
+                )
+            except Exception as error:
+                ai_polish = {
+                    "enabled": True,
+                    "status": "failed",
+                    "model": settings.ai_model,
+                    "template_applied": False,
+                    "message": str(error),
+                }
         sync = sync_result_to_output(result, output_target=normalized_target)
         local_artifacts = {"retained": False, "workdir": None}
         if workspace is not None:
@@ -189,6 +228,7 @@ def execute_single_conversion(
         "result": result,
         "sync": sync,
         "local_artifacts": local_artifacts,
+        "ai_polish": ai_polish,
     }
 
 
@@ -256,6 +296,125 @@ def build_config_payload() -> dict[str, Any]:
         "image_public_base_url": settings.image_storage_public_base_url,
         "image_storage_bucket": settings.image_storage_bucket,
         "image_storage_path_template": settings.image_storage_path_template,
+        "ai_enabled": settings.ai_enabled,
+        "ai_configured": settings.ai_configured,
+        "ai_model": settings.ai_model,
+        "ai_template_source": settings.ai_template_source,
+    }
+
+
+def resolve_ai_enabled(ai_enabled: bool | None, settings=None) -> bool:
+    settings = settings or get_settings()
+    if ai_enabled is None:
+        return settings.ai_enabled
+    return bool(ai_enabled)
+
+
+def apply_ai_polish_to_result(
+    *,
+    result: dict[str, Any],
+    url: str,
+    timeout: int,
+) -> dict[str, Any]:
+    settings = get_settings()
+    if not settings.ai_configured:
+        raise RuntimeError("AI 润色尚未配置完整")
+    markdown_path = Path(str(result["markdown_file"]))
+    ai_result = apply_ai_polish_to_markdown(
+        markdown_path=markdown_path,
+        metadata={
+            "title": str(result.get("title") or ""),
+            "author": str(result.get("author") or ""),
+            "url": str(result.get("original_url") or url),
+        },
+        ai_base_url=str(settings.ai_base_url),
+        ai_api_key=str(settings.ai_api_key),
+        ai_model=settings.ai_model,
+        interpreter_prompt=settings.ai_prompt_template,
+        frontmatter_template=settings.ai_frontmatter_template,
+        body_template=settings.ai_body_template,
+        context_template=settings.ai_context_template,
+        allow_body_polish=settings.ai_allow_body_polish,
+        timeout=max(timeout, 60),
+    )
+    result["ai_polish"] = ai_result
+    return ai_result
+
+
+def test_ai_connectivity(
+    *,
+    base_url: str,
+    api_key: str,
+    model: str,
+    timeout: int = 30,
+    http_session=None,
+) -> dict[str, Any]:
+    normalized_base_url = str(base_url or "").strip().rstrip("/")
+    normalized_api_key = str(api_key or "").strip()
+    normalized_model = str(model or "").strip()
+    if not normalized_base_url:
+        raise ValueError("AI Base URL 不能为空")
+    if not normalized_base_url.startswith(("http://", "https://")):
+        raise ValueError("AI Base URL 必须以 http:// 或 https:// 开头")
+    if not normalized_api_key:
+        raise ValueError("AI API Key 不能为空")
+    if not normalized_model:
+        raise ValueError("AI Model 不能为空")
+
+    session = http_session or requests.Session()
+    started = time.perf_counter()
+    try:
+        response = session.post(
+            f"{normalized_base_url}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {normalized_api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": normalized_model,
+                "temperature": 0,
+                "max_tokens": 32,
+                "messages": [
+                    {"role": "system", "content": "你是连通性测试助手，只返回极简文本。"},
+                    {"role": "user", "content": "请返回 JSON：{\"pong\":\"ok\"}"},
+                ],
+            },
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except requests.Timeout as error:
+        return {
+            "success": False,
+            "latency_ms": int((time.perf_counter() - started) * 1000),
+            "model": normalized_model,
+            "preview": "",
+            "message": f"请求超时: {error}",
+        }
+    except requests.RequestException as error:
+        return {
+            "success": False,
+            "latency_ms": int((time.perf_counter() - started) * 1000),
+            "model": normalized_model,
+            "preview": "",
+            "message": f"请求失败: {error}",
+        }
+    except ValueError as error:
+        return {
+            "success": False,
+            "latency_ms": int((time.perf_counter() - started) * 1000),
+            "model": normalized_model,
+            "preview": "",
+            "message": f"响应不是有效 JSON: {error}",
+        }
+
+    preview = _extract_chat_preview(payload)
+    return {
+        "success": True,
+        "latency_ms": int((time.perf_counter() - started) * 1000),
+        "model": str(payload.get("model") or normalized_model),
+        "preview": preview,
+        "message": "连接正常",
     }
 
 
@@ -512,6 +671,25 @@ def extract_single_wechat_url(text: str) -> tuple[str | None, int]:
 
 def _telegram_api_url(token: str, method: str) -> str:
     return f"https://api.telegram.org/bot{token}/{method}"
+
+
+def _extract_chat_preview(payload: dict[str, Any]) -> str:
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return json.dumps(payload, ensure_ascii=False)[:200]
+    message = choices[0].get("message") if isinstance(choices[0], dict) else None
+    if not isinstance(message, dict):
+        return json.dumps(payload, ensure_ascii=False)[:200]
+    content = message.get("content")
+    if isinstance(content, list):
+        preview = "".join(
+            str(item.get("text") or "")
+            for item in content
+            if isinstance(item, dict)
+        ).strip()
+    else:
+        preview = str(content or "").strip()
+    return preview[:400]
 
 
 def _copy_job(job: dict[str, Any]) -> dict[str, Any]:

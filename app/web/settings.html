@@ -37,6 +37,7 @@
       <button class="tab-btn active" data-tab="fns">FNS 同步</button>
       <button class="tab-btn" data-tab="image">图片模式</button>
       <button class="tab-btn" data-tab="telegram">Telegram Bot</button>
+      <button class="tab-btn" data-tab="ai">AI 润色</button>
       <button class="tab-btn" data-tab="behavior">运行行为</button>
       <button class="tab-btn" data-tab="security">账号安全</button>
     </div>
@@ -212,6 +213,81 @@
       </div>
     </div>
 
+    <!-- Tab: AI -->
+    <div class="tab-panel" data-tab-panel="settings" data-tab-id="ai">
+      <div class="card">
+        <h2 class="card-title">AI 润色</h2>
+        <p class="card-desc">使用 OpenAI 兼容接口生成 frontmatter、摘要、标签和固定模板块。默认关闭，可在首页单次覆盖。</p>
+
+        <label class="check-row" style="margin-bottom:12px;">
+          <input id="ai-enabled" type="checkbox">
+          启用 AI 润色
+        </label>
+        <label class="check-row" style="margin-bottom:12px;">
+          <input id="ai-allow-body-polish" type="checkbox">
+          允许生成额外正文补充块
+        </label>
+
+        <div class="field-row">
+          <div class="field">
+            <label for="ai-base-url">OpenAI 兼容 Base URL</label>
+            <input id="ai-base-url" placeholder="https://api.openai.com/v1">
+            <div class="field-hint" id="hint-ai-base-url"></div>
+          </div>
+          <div class="field">
+            <label for="ai-model">Model</label>
+            <input id="ai-model" placeholder="gpt-5.4-mini">
+            <div class="field-hint" id="hint-ai-model"></div>
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="ai-api-key">API Key</label>
+          <input id="ai-api-key" type="password" placeholder="留空则保持不变">
+          <div class="field-hint text-muted" id="ai-api-key-meta"></div>
+        </div>
+
+        <div class="field">
+          <label for="ai-context-template">解释器上下文模板</label>
+          <textarea id="ai-context-template" style="min-height:120px;" placeholder="{{content}}"></textarea>
+        </div>
+
+        <div class="field">
+          <label for="ai-prompt-template">解释器提示词</label>
+          <textarea id="ai-prompt-template" style="min-height:180px;"></textarea>
+        </div>
+
+        <div class="field">
+          <label for="ai-frontmatter-template">frontmatter 模板</label>
+          <textarea id="ai-frontmatter-template" style="min-height:160px;"></textarea>
+        </div>
+
+        <div class="field">
+          <label for="ai-body-template">body 模板</label>
+          <textarea id="ai-body-template" style="min-height:180px;"></textarea>
+        </div>
+
+        <div class="action-row">
+          <button id="test-ai-btn" class="btn btn-secondary">测试 AI 连通性</button>
+          <button id="clear-ai-api-key" class="btn btn-danger">清空 AI API Key</button>
+        </div>
+        <div id="ai-result-area"></div>
+
+        <div class="sep"></div>
+
+        <h3 class="card-title" style="font-size:18px;">导入 Clipper JSON 模板</h3>
+        <p class="card-desc">粘贴 Obsidian Web Clipper 模板 JSON，自动映射为当前系统的 frontmatter、body 和解释器模板。</p>
+        <div class="field">
+          <label for="clipper-json-input">Clipper JSON</label>
+          <textarea id="clipper-json-input" style="min-height:180px;" placeholder='{"schemaVersion":"0.1.0","properties":[...],"noteContentFormat":"..."}'></textarea>
+        </div>
+        <div class="action-row">
+          <button id="paste-clipper-btn" class="btn btn-secondary">从剪贴板导入</button>
+          <button id="parse-clipper-btn" class="btn btn-ghost">解析并填充</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Tab: Behavior -->
     <div class="tab-panel" data-tab-panel="settings" data-tab-id="behavior">
       <div class="card">
@@ -259,6 +335,7 @@
   <script>
     AdminUI.initTabs();
     const clearFields = new Set();
+    let currentAiTemplateSource = "manual";
 
     /* ── Helpers ── */
     function getImageMode() {
@@ -270,7 +347,7 @@
     }
 
     document.querySelectorAll('input[name="image-mode"]').forEach((el) =>
-      el.addEventListener("change", syncS3Panel)
+      el.addEventListener("change", () => { syncS3Panel(); validateAll(); })
     );
 
     /* ── Validators ── */
@@ -320,6 +397,18 @@
       "telegram-webhook-secret": (v) => !document.getElementById("telegram-enabled").checked || v || document.getElementById("telegram-webhook-secret-meta").textContent.includes("已配置")
         ? { ok: true, text: "" }
         : { ok: false, text: "启用 Telegram 时需要 Webhook Secret" },
+      "ai-base-url": (v) => !document.getElementById("ai-enabled").checked || /^https?:\/\//i.test(v)
+        ? { ok: true, text: "" }
+        : { ok: false, text: "必须以 http:// 或 https:// 开头" },
+      "ai-model": (v) => !document.getElementById("ai-enabled").checked || Boolean(v)
+        ? { ok: true, text: "" }
+        : { ok: false, text: "启用 AI 时请填写模型" },
+      "ai-api-key": (v) => !document.getElementById("ai-enabled").checked || v || document.getElementById("ai-api-key-meta").textContent.includes("已配置")
+        ? { ok: true, text: "" }
+        : { ok: false, text: "启用 AI 时需要 API Key" },
+      "ai-context-template": (v) => !document.getElementById("ai-enabled").checked || Boolean(v.trim())
+        ? { ok: true, text: "" }
+        : { ok: false, text: "启用 AI 时请填写解释器上下文模板" },
     };
 
     function validateField(id) {
@@ -345,6 +434,9 @@
 
     Object.keys(validators).forEach((id) => {
       document.getElementById(id)?.addEventListener("input", validateAll);
+    });
+    ["telegram-enabled", "ai-enabled"].forEach((id) => {
+      document.getElementById(id)?.addEventListener("change", validateAll);
     });
 
     /* ── FNS Import ── */
@@ -416,6 +508,163 @@
       AdminUI.toast("已标记清空 Telegram Webhook Secret", "warn");
     });
 
+    document.getElementById("clear-ai-api-key").addEventListener("click", () => {
+      clearFields.add("ai_api_key");
+      document.getElementById("ai-api-key").value = "";
+      document.getElementById("ai-api-key-meta").textContent = "保存时将清空 AI API Key";
+      validateAll();
+      AdminUI.toast("已标记清空 AI API Key", "warn");
+    });
+
+    /* ── AI Test ── */
+    document.getElementById("test-ai-btn").addEventListener("click", async () => {
+      const btn = document.getElementById("test-ai-btn");
+      btn.disabled = true;
+      btn.textContent = "测试中…";
+      try {
+        const res = await fetch("/api/admin/ai-test", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            base_url: document.getElementById("ai-base-url").value.trim(),
+            api_key: document.getElementById("ai-api-key").value.trim(),
+            model: document.getElementById("ai-model").value.trim(),
+          }),
+        });
+        const data = await res.json();
+        if (res.ok && data.success) {
+          AdminUI.toast("AI 连通正常", "success");
+          AdminUI.setHtml("ai-result-area", AdminUI.resultHtml({
+            title: "AI 连通正常",
+            tone: "success",
+            description: data.message || "模型配置可用",
+            items: [
+              { label: "模型", value: data.model || "-" },
+              { label: "延迟", value: data.latency_ms != null ? `${data.latency_ms} ms` : "-" },
+              { label: "返回预览", value: data.preview || "-" },
+            ],
+            json: data,
+          }));
+        } else {
+          const detail = data.detail || data.message || "AI 测试失败";
+          AdminUI.toast(detail, "error");
+          AdminUI.setHtml("ai-result-area", AdminUI.resultHtml({
+            title: "AI 测试失败",
+            tone: "error",
+            description: detail,
+            json: data,
+          }));
+        }
+      } catch (err) {
+        AdminUI.toast("AI 测试失败", "error");
+        AdminUI.setHtml("ai-result-area", AdminUI.resultHtml({
+          title: "AI 测试失败",
+          tone: "error",
+          description: "无法完成连通性测试，请稍后重试。",
+        }));
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "测试 AI 连通性";
+      }
+    });
+
+    /* ── Clipper JSON Import ── */
+    function yamlEscape(value) {
+      const text = String(value ?? "");
+      return JSON.stringify(text);
+    }
+
+    function normalizeClipperPlaceholder(matchText, variableName) {
+      return `{{${variableName}}}`;
+    }
+
+    function buildFrontmatterTemplate(properties) {
+      const lines = ["---"];
+      for (const item of properties) {
+        if (!item || typeof item !== "object") continue;
+        const name = String(item.name || "").trim();
+        if (!name) continue;
+        const value = String(item.value ?? "");
+        lines.push(`${name}: ${value}`);
+      }
+      lines.push("---");
+      return lines.join("\n");
+    }
+
+    function transformClipperTemplate(rawTemplate, variablePrompts) {
+      let blockIndex = 0;
+      return String(rawTemplate || "").replace(/{{\s*"([^"]+)"\s*}}/g, (_, promptText) => {
+        blockIndex += 1;
+        const variableName = `clipper_block_${blockIndex}`;
+        variablePrompts[variableName] = String(promptText || "").trim();
+        return normalizeClipperPlaceholder(_, variableName);
+      });
+    }
+
+    function parseClipperTemplate(raw) {
+      let parsed;
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        throw new Error("Clipper 模板不是有效 JSON");
+      }
+      if (!parsed || typeof parsed !== "object") throw new Error("Clipper 模板结构无效");
+
+      const properties = Array.isArray(parsed.properties) ? parsed.properties : [];
+      const variablePrompts = {};
+      const normalizedProperties = properties.map((item) => {
+        if (!item || typeof item !== "object") return item;
+        const name = String(item.name || "").trim();
+        let value = String(item.value ?? "");
+        const promptMatch = value.match(/^{{\s*(?:\\"|"|\\&quot;)(.+?)(?:\\"|"|\\&quot;)\s*}}$/);
+        if (promptMatch && name) {
+          variablePrompts[name] = String(promptMatch[1] || "").trim();
+          value = `{{${name}}}`;
+        }
+        return { ...item, value };
+      });
+
+      const bodyTemplate = transformClipperTemplate(parsed.noteContentFormat || "", variablePrompts);
+      const contextTemplate = String(parsed.context || "{{content}}");
+      const frontmatterTemplate = buildFrontmatterTemplate(normalizedProperties);
+
+      return {
+        frontmatterTemplate,
+        bodyTemplate,
+        contextTemplate,
+        promptTemplate: JSON.stringify(variablePrompts, null, 2),
+        templateSource: "clipper_import",
+      };
+    }
+
+    function applyClipperTemplateImport(parsed) {
+      document.getElementById("ai-frontmatter-template").value = parsed.frontmatterTemplate;
+      document.getElementById("ai-body-template").value = parsed.bodyTemplate;
+      document.getElementById("ai-context-template").value = parsed.contextTemplate;
+      document.getElementById("ai-prompt-template").value = parsed.promptTemplate;
+      currentAiTemplateSource = parsed.templateSource;
+      validateAll();
+      AdminUI.toast("Clipper 模板已映射到当前 AI 配置，请确认后保存", "success");
+    }
+
+    document.getElementById("paste-clipper-btn").addEventListener("click", async () => {
+      try {
+        const text = await navigator.clipboard.readText();
+        document.getElementById("clipper-json-input").value = text;
+        applyClipperTemplateImport(parseClipperTemplate(text));
+      } catch (err) {
+        AdminUI.toast(err?.message || "剪贴板读取失败，请手动粘贴", "error");
+      }
+    });
+
+    document.getElementById("parse-clipper-btn").addEventListener("click", () => {
+      try {
+        applyClipperTemplateImport(parseClipperTemplate(document.getElementById("clipper-json-input").value.trim()));
+      } catch (err) {
+        AdminUI.toast(String(err.message || err), "error");
+      }
+    });
+
     /* ── Check FNS ── */
     document.getElementById("check-fns-btn").addEventListener("click", async () => {
       const btn = document.getElementById("check-fns-btn");
@@ -479,16 +728,27 @@
         telegram_notify_on_complete: document.getElementById("telegram-notify-on-complete").checked,
         telegram_webhook_public_base_url: document.getElementById("telegram-webhook-public-base-url").value.trim(),
         telegram_allowed_chat_ids: document.getElementById("telegram-allowed-chat-ids").value.trim(),
+        ai_enabled: document.getElementById("ai-enabled").checked,
+        ai_allow_body_polish: document.getElementById("ai-allow-body-polish").checked,
+        ai_base_url: document.getElementById("ai-base-url").value.trim(),
+        ai_model: document.getElementById("ai-model").value.trim(),
+        ai_prompt_template: document.getElementById("ai-prompt-template").value,
+        ai_frontmatter_template: document.getElementById("ai-frontmatter-template").value,
+        ai_body_template: document.getElementById("ai-body-template").value,
+        ai_context_template: document.getElementById("ai-context-template").value,
+        ai_template_source: currentAiTemplateSource,
         clear_fields: Array.from(clearFields),
       };
       const fnsToken = document.getElementById("fns-token").value.trim();
       const s3Secret = document.getElementById("s3-secret-key").value.trim();
       const telegramToken = document.getElementById("telegram-bot-token").value.trim();
       const telegramSecret = document.getElementById("telegram-webhook-secret").value.trim();
+      const aiApiKey = document.getElementById("ai-api-key").value.trim();
       if (fnsToken) payload.fns_token = fnsToken;
       if (s3Secret) payload.image_storage_secret_access_key = s3Secret;
       if (telegramToken) payload.telegram_bot_token = telegramToken;
       if (telegramSecret) payload.telegram_webhook_secret = telegramSecret;
+      if (aiApiKey) payload.ai_api_key = aiApiKey;
 
       try {
         const res = await fetch("/api/admin/settings", {
@@ -505,6 +765,7 @@
               { label: "FNS Vault", value: data.settings?.fns_vault || "-" },
               { label: "图片模式", value: data.settings?.image_mode === "s3_hotlink" ? "S3 图床外链" : "微信原链" },
               { label: "Telegram", value: data.settings?.telegram_enabled ? "已启用" : "未启用" },
+              { label: "AI 润色", value: data.settings?.ai_enabled ? `已启用 / ${data.settings?.ai_model || "-"}` : "未启用" },
             ],
             json: data,
           }));
@@ -593,6 +854,18 @@
           ? `已配置：${data.telegram_bot_token_masked}` : "未配置";
         document.getElementById("telegram-webhook-secret-meta").textContent = data.telegram_webhook_secret_configured
           ? `已配置：${data.telegram_webhook_secret_masked}` : "未配置";
+        document.getElementById("ai-enabled").checked = Boolean(data.ai_enabled);
+        document.getElementById("ai-allow-body-polish").checked = Boolean(data.ai_allow_body_polish);
+        document.getElementById("ai-base-url").value = data.ai_base_url || "";
+        document.getElementById("ai-model").value = data.ai_model || "";
+        document.getElementById("ai-api-key").value = "";
+        document.getElementById("ai-api-key-meta").textContent = data.ai_api_key_configured
+          ? `已配置：${data.ai_api_key_masked}` : "未配置";
+        document.getElementById("ai-prompt-template").value = data.ai_prompt_template || "";
+        document.getElementById("ai-frontmatter-template").value = data.ai_frontmatter_template || "";
+        document.getElementById("ai-body-template").value = data.ai_body_template || "";
+        document.getElementById("ai-context-template").value = data.ai_context_template || "{{content}}";
+        currentAiTemplateSource = data.ai_template_source || "manual";
 
         if (data.telegram_enabled || data.telegram_webhook_status !== "inactive" || data.telegram_webhook_message) {
           AdminUI.setHtml("telegram-result-area", AdminUI.resultHtml({

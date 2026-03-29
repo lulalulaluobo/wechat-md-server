@@ -859,6 +859,7 @@ def format_markdown(markdown: str, markdown_dir: Path) -> tuple[str, Dict[str, o
 
     text = markdown.replace('\r\n', '\n').replace('\r', '\n')
     text = text.replace('\xa0', ' ')
+    text = _normalize_single_backtick_code_blocks(text)
     text = re.sub(r'[ \t]+\n', '\n', text)
     text = re.sub(r'\*{4,}', '', text)
     text = re.sub(r'([^\n])(!\[[^\]]*\]\([^)]+\))', r'\1\n\n\2', text)
@@ -976,6 +977,7 @@ def format_markdown(markdown: str, markdown_dir: Path) -> tuple[str, Dict[str, o
         result_lines.append(line)
 
     text = '\n'.join(result_lines)
+    text = _insert_missing_table_separators(text)
     text = _normalize_blank_lines(text)
     text = _remove_promotional_content(text, summary)
     text = _normalize_blank_lines(text)
@@ -1020,6 +1022,106 @@ def _normalize_blank_lines(markdown: str) -> str:
     while normalized and normalized[-1] == '':
         normalized.pop()
     return '\n'.join(normalized)
+
+
+def _normalize_single_backtick_code_blocks(markdown: str) -> str:
+    lines = markdown.split('\n')
+    normalized: List[str] = []
+    index = 0
+
+    while index < len(lines):
+        inline_open_match = re.match(r'^(.*)`\s*$', lines[index])
+        if inline_open_match and '```' not in lines[index]:
+            prefix = inline_open_match.group(1).rstrip()
+            end_index = index + 1
+            block_lines: List[str] = []
+            while end_index < len(lines):
+                closing_match = re.match(r'^(.*)`\s*$', lines[end_index])
+                if closing_match:
+                    closing_prefix = closing_match.group(1)
+                    if closing_prefix:
+                        block_lines.append(closing_prefix)
+                    break
+                block_lines.append(lines[end_index])
+                end_index += 1
+            if end_index < len(lines):
+                block_text = '\n'.join(block_lines).strip('\n')
+                fence_language = _detect_code_fence_language(block_text)
+                if prefix:
+                    normalized.append(prefix)
+                    normalized.append('')
+                normalized.append(f'```{fence_language}')
+                normalized.extend(block_lines)
+                normalized.append('```')
+                index = end_index + 1
+                continue
+
+        if lines[index].strip() == '`':
+            end_index = index + 1
+            while end_index < len(lines) and lines[end_index].strip() != '`':
+                end_index += 1
+            if end_index < len(lines):
+                block_lines = lines[index + 1:end_index]
+                block_text = '\n'.join(block_lines).strip('\n')
+                fence_language = _detect_code_fence_language(block_text)
+                normalized.append(f'```{fence_language}')
+                normalized.extend(block_lines)
+                normalized.append('```')
+                index = end_index + 1
+                continue
+        normalized.append(lines[index])
+        index += 1
+
+    return '\n'.join(normalized)
+
+
+def _detect_code_fence_language(block_text: str) -> str:
+    stripped = (block_text or '').strip()
+    if stripped.startswith('{') or stripped.startswith('['):
+        return 'json'
+    return 'text'
+
+
+def _insert_missing_table_separators(markdown: str) -> str:
+    lines = markdown.split('\n')
+    normalized: List[str] = []
+    index = 0
+
+    while index < len(lines):
+        line = lines[index]
+        if _is_markdown_table_row(line):
+            table_lines: List[str] = []
+            while index < len(lines) and _is_markdown_table_row(lines[index]):
+                table_lines.append(lines[index].rstrip())
+                index += 1
+
+            if table_lines and not _is_markdown_table_separator(table_lines[1] if len(table_lines) > 1 else ''):
+                header_cells = [cell.strip() for cell in table_lines[0].strip().strip('|').split('|')]
+                separator = '| ' + ' | '.join('---' for _ in header_cells) + ' |'
+                normalized.append(table_lines[0])
+                normalized.append(separator)
+                normalized.extend(table_lines[1:])
+            else:
+                normalized.extend(table_lines)
+            continue
+
+        normalized.append(line)
+        index += 1
+
+    return '\n'.join(normalized)
+
+
+def _is_markdown_table_row(line: str) -> bool:
+    stripped = line.strip()
+    return stripped.startswith('|') and stripped.endswith('|') and stripped.count('|') >= 2
+
+
+def _is_markdown_table_separator(line: str) -> bool:
+    stripped = line.strip()
+    if not _is_markdown_table_row(stripped):
+        return False
+    cells = [cell.strip() for cell in stripped.strip('|').split('|')]
+    return all(re.fullmatch(r':?-{3,}:?', cell or '') for cell in cells)
 
 
 def _is_wechat_metadata_noise(line: str) -> bool:

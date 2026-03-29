@@ -83,6 +83,7 @@ class ApiTests(unittest.TestCase):
         self.assertIn("任务摘要", response.text)
         self.assertIn("最近结果", response.text)
         self.assertIn("粘贴", response.text)
+        self.assertIn("本次启用 AI 润色", response.text)
         self.assertIn("原始 JSON", response.text)
         self.assertNotIn("输出目录", response.text)
         self.assertNotIn("输出目标", response.text)
@@ -126,6 +127,25 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "success")
         self.assertEqual(response.json()["result"]["title"], "示例")
+
+    def test_convert_passes_ai_override(self):
+        self._login()
+        fake_result = {
+            "status": "success",
+            "output_target": "fns",
+            "result": {"title": "示例", "markdown_file": r"D:\obsidian\00_Inbox\01_示例\示例.md"},
+            "sync": {"status": "success", "target": "fns", "path": "00_Inbox/微信公众号/示例.md"},
+            "local_artifacts": {"retained": False, "workdir": None},
+            "ai_polish": {"enabled": True, "status": "success", "model": "gpt-5.4-mini"},
+        }
+        with patch("app.api.routes.execute_single_conversion", return_value=fake_result) as mocked_execute:
+            response = self.client.post(
+                "/api/convert",
+                json={"url": "https://mp.weixin.qq.com/s/example", "ai_enabled": True},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(mocked_execute.call_args.kwargs["ai_enabled"])
 
     def test_login_cookie_uses_secure_flag_when_enabled(self):
         with patch.dict(os.environ, {"WECHAT_MD_SESSION_COOKIE_SECURE": "true"}, clear=False):
@@ -275,6 +295,22 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.json()["job_id"], "job-1")
         self.assertEqual(response.json()["deduped_count"], 2)
 
+    def test_batch_passes_ai_override(self):
+        self._login()
+        with patch("app.api.routes.job_store.create_batch_job") as mocked:
+            mocked.return_value = {
+                "job_id": "job-ai",
+                "total": 1,
+                "output_dir": r"D:\obsidian\00_Inbox",
+            }
+            response = self.client.post(
+                "/api/batch",
+                data={"urls_text": "https://mp.weixin.qq.com/s/a", "ai_enabled": "true"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(mocked.call_args.kwargs["ai_enabled"])
+
     def test_batch_from_file(self):
         self._login()
         with patch("app.api.routes.job_store.create_batch_job") as mocked:
@@ -364,6 +400,13 @@ class ApiTests(unittest.TestCase):
         self.assertIn("Bot Token", text)
         self.assertIn("Webhook 对外基础地址", text)
         self.assertIn("白名单 Chat ID", text)
+        self.assertIn("AI 润色", text)
+        self.assertIn("OpenAI 兼容 Base URL", text)
+        self.assertIn("解释器提示词", text)
+        self.assertIn("frontmatter 模板", text)
+        self.assertIn("body 模板", text)
+        self.assertIn("测试 AI 连通性", text)
+        self.assertIn("导入 Clipper JSON 模板", text)
 
     def test_admin_settings_masks_telegram_secret_values(self):
         self._login()
@@ -550,6 +593,12 @@ class ApiTests(unittest.TestCase):
                 "image_storage_secret_access_key": "secret-1",
                 "image_storage_path_template": "wechat/{year}/{filename}",
                 "image_storage_public_base_url": "https://img.example.com",
+                "ai_enabled": True,
+                "ai_base_url": "https://api.example.com/v1",
+                "ai_api_key": "ai-secret-key",
+                "ai_model": "gpt-5.4-mini",
+                "ai_context_template": "{{content}}",
+                "ai_template_source": "manual",
             },
         )
         response = self.client.get("/api/admin/settings")
@@ -562,8 +611,14 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(data["image_mode"], "s3_hotlink")
         self.assertEqual(data["image_storage_endpoint"], "https://s3.example.com")
         self.assertTrue(data["image_storage_secret_access_key_configured"])
+        self.assertTrue(data["ai_enabled"])
+        self.assertTrue(data["ai_api_key_configured"])
+        self.assertEqual(data["ai_model"], "gpt-5.4-mini")
+        self.assertEqual(data["ai_context_template"], "{{content}}")
+        self.assertEqual(data["ai_template_source"], "manual")
         self.assertNotIn("fns-secret-token", str(data))
         self.assertNotIn("secret-1", str(data))
+        self.assertNotIn("ai-secret-key", str(data))
         self.assertNotIn("access_token_configured", data)
 
     def test_admin_settings_put_updates_runtime_config_and_config_endpoint(self):
@@ -583,6 +638,15 @@ class ApiTests(unittest.TestCase):
                 "image_storage_secret_access_key": "secret-1",
                 "image_storage_path_template": "wechat/{year}/{filename}",
                 "image_storage_public_base_url": "https://img.example.com",
+                "ai_enabled": True,
+                "ai_base_url": "https://api.example.com/v1",
+                "ai_api_key": "ai-key-1",
+                "ai_model": "gpt-5.4-mini",
+                "ai_prompt_template": "请总结 {{title}}",
+                "ai_frontmatter_template": "---\ntitle: {{title}}\nsummary: {{summary}}\n---",
+                "ai_body_template": "> [!summary]\n> {{summary}}",
+                "ai_context_template": "{{title}}\n\n{{content}}",
+                "ai_template_source": "clipper_import",
             },
         )
         config_response = self.client.get("/api/config")
@@ -597,11 +661,43 @@ class ApiTests(unittest.TestCase):
         self.assertIn("\"image_mode\": \"s3_hotlink\"", saved_text)
         self.assertNotIn("new-fns-token", saved_text)
         self.assertNotIn("secret-1", saved_text)
+        self.assertNotIn("ai-key-1", saved_text)
         config_data = config_response.json()
         self.assertTrue(config_data["fns_enabled"])
         self.assertEqual(config_data["fns_base_url"], "https://obsync.example.com")
         self.assertEqual(config_data["image_mode"], "s3_hotlink")
         self.assertEqual(config_data["image_public_base_url"], "https://img.example.com")
+        self.assertTrue(config_data["ai_enabled"])
+        self.assertTrue(config_data["ai_configured"])
+        self.assertEqual(config_data["ai_model"], "gpt-5.4-mini")
+        self.assertEqual(config_data["ai_template_source"], "clipper_import")
+
+    def test_ai_test_endpoint_uses_current_form_payload(self):
+        self._login()
+        with patch(
+            "app.api.routes.test_ai_connectivity",
+            return_value={
+                "success": True,
+                "latency_ms": 123,
+                "model": "gpt-5.4-mini",
+                "preview": "{\"pong\":\"ok\"}",
+                "message": "连接正常",
+            },
+        ) as mocked_test:
+            response = self.client.post(
+                "/api/admin/ai-test",
+                json={
+                    "base_url": "https://api.example.com/v1",
+                    "api_key": "ai-key-1",
+                    "model": "gpt-5.4-mini",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["success"])
+        self.assertEqual(mocked_test.call_args.kwargs["base_url"], "https://api.example.com/v1")
+        self.assertEqual(mocked_test.call_args.kwargs["api_key"], "ai-key-1")
+        self.assertEqual(mocked_test.call_args.kwargs["model"], "gpt-5.4-mini")
 
     def test_admin_settings_accepts_wechat_hotlink_without_storage_fields(self):
         self._login()

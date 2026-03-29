@@ -137,6 +137,43 @@ class SettingsTests(unittest.TestCase):
         self.assertIn("secret_access_key_encrypted", runtime_text)
         self.assertTrue(settings.fns_enabled)
 
+    def test_save_runtime_config_persists_ai_settings_and_encrypts_api_key(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runtime_path = Path(temp_dir) / "runtime-config.json"
+            env = {
+                "WECHAT_MD_RUNTIME_CONFIG_PATH": str(runtime_path),
+                "WECHAT_MD_APP_MASTER_KEY": "test-master-key",
+                "WECHAT_MD_ADMIN_PASSWORD": "admin",
+            }
+            with patch.dict(os.environ, env, clear=False):
+                save_runtime_config(
+                    {
+                        "ai_enabled": True,
+                        "ai_base_url": "https://api.example.com/v1",
+                        "ai_api_key": "ai-key-1",
+                        "ai_model": "gpt-5.4-mini",
+                        "ai_prompt_template": "请总结 {{title}}",
+                        "ai_frontmatter_template": "---\ntitle: {{title}}\nsummary: {{summary}}\n---",
+                        "ai_body_template": "> [!summary]\n> {{summary}}",
+                        "ai_context_template": "{{title}}\n\n{{content}}",
+                        "ai_template_source": "clipper_import",
+                        "ai_allow_body_polish": True,
+                    }
+                )
+                settings = get_settings()
+                runtime_text = runtime_path.read_text(encoding="utf-8")
+                runtime_data = load_runtime_config(runtime_path)
+
+        self.assertTrue(settings.ai_enabled)
+        self.assertEqual(settings.ai_base_url, "https://api.example.com/v1")
+        self.assertEqual(settings.ai_model, "gpt-5.4-mini")
+        self.assertTrue(settings.ai_allow_body_polish)
+        self.assertEqual(settings.ai_context_template, "{{title}}\n\n{{content}}")
+        self.assertEqual(settings.ai_template_source, "clipper_import")
+        self.assertEqual(runtime_data["user_settings"]["ai_model"], "gpt-5.4-mini")
+        self.assertNotIn("ai-key-1", runtime_text)
+        self.assertIn("ai_api_key_encrypted", runtime_text)
+
     def test_runtime_config_requires_correct_master_key_for_encrypted_secrets(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             runtime_path = Path(temp_dir) / "runtime-config.json"
