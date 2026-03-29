@@ -227,6 +227,10 @@
           <input id="ai-allow-body-polish" type="checkbox">
           允许生成额外正文补充块
         </label>
+        <label class="check-row" style="margin-bottom:12px;">
+          <input id="ai-enable-content-polish" type="checkbox">
+          启用正文润色（生成 content_polished）
+        </label>
 
         <div class="field-row">
           <div class="field">
@@ -250,6 +254,12 @@
         <div class="field">
           <label for="ai-context-template">解释器上下文模板</label>
           <textarea id="ai-context-template" style="min-height:120px;" placeholder="{{content}}"></textarea>
+        </div>
+
+        <div class="field">
+          <label for="ai-content-polish-prompt">正文润色提示词</label>
+          <textarea id="ai-content-polish-prompt" style="min-height:140px;" placeholder="请把正文整理为更适合 Obsidian 阅读的 Markdown"></textarea>
+          <div class="field-hint" id="hint-ai-content-polish-prompt"></div>
         </div>
 
         <div class="field">
@@ -409,6 +419,9 @@
       "ai-context-template": (v) => !document.getElementById("ai-enabled").checked || Boolean(v.trim())
         ? { ok: true, text: "" }
         : { ok: false, text: "启用 AI 时请填写解释器上下文模板" },
+      "ai-content-polish-prompt": (v) => !document.getElementById("ai-enabled").checked || !document.getElementById("ai-enable-content-polish").checked || Boolean(v.trim())
+        ? { ok: true, text: "" }
+        : { ok: false, text: "启用正文润色时请填写正文润色提示词" },
     };
 
     function validateField(id) {
@@ -435,7 +448,7 @@
     Object.keys(validators).forEach((id) => {
       document.getElementById(id)?.addEventListener("input", validateAll);
     });
-    ["telegram-enabled", "ai-enabled"].forEach((id) => {
+    ["telegram-enabled", "ai-enabled", "ai-enable-content-polish"].forEach((id) => {
       document.getElementById(id)?.addEventListener("change", validateAll);
     });
 
@@ -730,12 +743,14 @@
         telegram_allowed_chat_ids: document.getElementById("telegram-allowed-chat-ids").value.trim(),
         ai_enabled: document.getElementById("ai-enabled").checked,
         ai_allow_body_polish: document.getElementById("ai-allow-body-polish").checked,
+        ai_enable_content_polish: document.getElementById("ai-enable-content-polish").checked,
         ai_base_url: document.getElementById("ai-base-url").value.trim(),
         ai_model: document.getElementById("ai-model").value.trim(),
         ai_prompt_template: document.getElementById("ai-prompt-template").value,
         ai_frontmatter_template: document.getElementById("ai-frontmatter-template").value,
         ai_body_template: document.getElementById("ai-body-template").value,
         ai_context_template: document.getElementById("ai-context-template").value,
+        ai_content_polish_prompt: document.getElementById("ai-content-polish-prompt").value,
         ai_template_source: currentAiTemplateSource,
         clear_fields: Array.from(clearFields),
       };
@@ -856,6 +871,7 @@
           ? `已配置：${data.telegram_webhook_secret_masked}` : "未配置";
         document.getElementById("ai-enabled").checked = Boolean(data.ai_enabled);
         document.getElementById("ai-allow-body-polish").checked = Boolean(data.ai_allow_body_polish);
+        document.getElementById("ai-enable-content-polish").checked = Boolean(data.ai_enable_content_polish);
         document.getElementById("ai-base-url").value = data.ai_base_url || "";
         document.getElementById("ai-model").value = data.ai_model || "";
         document.getElementById("ai-api-key").value = "";
@@ -865,6 +881,7 @@
         document.getElementById("ai-frontmatter-template").value = data.ai_frontmatter_template || "";
         document.getElementById("ai-body-template").value = data.ai_body_template || "";
         document.getElementById("ai-context-template").value = data.ai_context_template || "{{content}}";
+        document.getElementById("ai-content-polish-prompt").value = data.ai_content_polish_prompt || "";
         currentAiTemplateSource = data.ai_template_source || "manual";
 
         if (data.telegram_enabled || data.telegram_webhook_status !== "inactive" || data.telegram_webhook_message) {

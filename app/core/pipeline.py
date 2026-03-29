@@ -1031,20 +1031,31 @@ def _normalize_single_backtick_code_blocks(markdown: str) -> str:
 
     while index < len(lines):
         inline_open_match = re.match(r'^(.*)`\s*$', lines[index])
-        if inline_open_match and '```' not in lines[index]:
+        if inline_open_match and '```' not in lines[index] and lines[index].strip() != '`':
             prefix = inline_open_match.group(1).rstrip()
-            end_index = index + 1
+            probe_index = index + 1
+            while probe_index < len(lines) and not lines[probe_index].strip():
+                probe_index += 1
+
+            end_index = probe_index
             block_lines: List[str] = []
+            explicit_close = False
             while end_index < len(lines):
-                closing_match = re.match(r'^(.*)`\s*$', lines[end_index])
-                if closing_match:
+                current_line = lines[end_index]
+                closing_match = re.match(r'^(.*)`\s*$', current_line)
+                if closing_match and _looks_like_single_backtick_code_line(closing_match.group(1)):
                     closing_prefix = closing_match.group(1)
                     if closing_prefix:
                         block_lines.append(closing_prefix)
+                    explicit_close = True
                     break
-                block_lines.append(lines[end_index])
+                if not current_line.strip():
+                    break
+                if not _looks_like_single_backtick_code_line(current_line):
+                    break
+                block_lines.append(current_line)
                 end_index += 1
-            if end_index < len(lines):
+            if block_lines:
                 block_text = '\n'.join(block_lines).strip('\n')
                 fence_language = _detect_code_fence_language(block_text)
                 if prefix:
@@ -1053,7 +1064,27 @@ def _normalize_single_backtick_code_blocks(markdown: str) -> str:
                 normalized.append(f'```{fence_language}')
                 normalized.extend(block_lines)
                 normalized.append('```')
-                index = end_index + 1
+                index = end_index + 1 if explicit_close else end_index
+                continue
+
+            standalone_close_index = index + 1
+            while standalone_close_index < len(lines):
+                if lines[standalone_close_index].strip() == '`':
+                    block_lines = _trim_blank_edge_lines(lines[index + 1:standalone_close_index])
+                    if block_lines:
+                        block_text = '\n'.join(block_lines).strip('\n')
+                        fence_language = _detect_code_fence_language(block_text)
+                        if prefix:
+                            normalized.append(prefix)
+                            normalized.append('')
+                        normalized.append(f'```{fence_language}')
+                        normalized.extend(block_lines)
+                        normalized.append('```')
+                        index = standalone_close_index + 1
+                        break
+                    break
+                standalone_close_index += 1
+            if index > probe_index:
                 continue
 
         if lines[index].strip() == '`':
@@ -1073,6 +1104,39 @@ def _normalize_single_backtick_code_blocks(markdown: str) -> str:
         index += 1
 
     return '\n'.join(normalized)
+
+
+def _trim_blank_edge_lines(lines: List[str]) -> List[str]:
+    start = 0
+    end = len(lines)
+    while start < end and not lines[start].strip():
+        start += 1
+    while end > start and not lines[end - 1].strip():
+        end -= 1
+    return lines[start:end]
+
+
+def _looks_like_single_backtick_code_line(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped or stripped == '---':
+        return False
+    if stripped.startswith(('#', '>')):
+        return False
+    if '->' in stripped:
+        return True
+    if stripped[0] in '{[}]':
+        return True
+    if stripped.startswith(('"', "'")):
+        return True
+    if stripped.startswith(('-y', '--')):
+        return True
+    if re.match(r'^[A-Za-z0-9_.-]+\s*:\s*', stripped):
+        return True
+    if re.match(r'^[A-Za-z0-9_.-]+\s*=\s*', stripped):
+        return True
+    if re.fullmatch(r'[A-Za-z0-9_./:-]+', stripped) and ('_' in stripped or '/' in stripped or '--' in stripped):
+        return True
+    return False
 
 
 def _detect_code_fence_language(block_text: str) -> str:

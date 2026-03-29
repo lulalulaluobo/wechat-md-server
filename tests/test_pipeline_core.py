@@ -270,6 +270,64 @@ class MarkdownStructureTests(unittest.TestCase):
         self.assertIn("原文链接:", formatted)
         self.assertEqual(summary.get("removed_promotion_blocks"), 1)
 
+    def test_format_markdown_converts_single_backtick_blocks_without_swallowing_following_prose(self):
+        module = load_pipeline_module()
+        markdown = """实际效果：我在 Claude.ai 里说“创建一个每天采集 AI 资讯的工作流”，Claude 自动执行了这条链条：`
+get_sdk_reference -> search_nodes -> get_node_types -> validate_workflow -> create_workflow_from_code`
+
+不到 2 分钟，一个 13 节点的完整工作流就出现在我的 n8n 实例上了。
+
+---
+
+PART.07
+
+连接 ChatGPT
+
+开发工具类客户端用 Access Token 方式，在 config 里加一段：`
+{
+"mcpServers": {
+"n8n": {
+"command": "npx",
+"args": [
+"-y", "supergateway"
+]
+}
+}
+}`"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            formatted, _ = module.format_markdown(markdown, Path(temp_dir))
+
+        self.assertIn("```text\nget_sdk_reference -> search_nodes -> get_node_types -> validate_workflow -> create_workflow_from_code\n```", formatted)
+        self.assertIn("```\n\n不到 2 分钟，一个 13 节点的完整工作流就出现在我的 n8n 实例上了。", formatted)
+        self.assertIn("\n\nPART.07\n", formatted)
+        self.assertIn("```json\n{\n\"mcpServers\": {", formatted)
+        self.assertNotIn("```text\n不到 2 分钟", formatted)
+
+    def test_format_markdown_implicitly_closes_unterminated_single_backtick_block_before_prose(self):
+        module = load_pipeline_module()
+        markdown = """实际效果：我在 Claude.ai 里说“创建一个每天采集 AI 资讯的工作流”，Claude 自动执行了这条链条：`
+get_sdk_reference -> search_nodes -> get_node_types -> validate_workflow -> create_workflow_from_code
+
+不到 2 分钟，一个 13 节点的完整工作流就出现在我的 n8n 实例上了。
+
+开发工具类客户端用 Access Token 方式，在 config 里加一段：`
+{
+"mcpServers": {
+"n8n": {
+"command": "npx"
+}
+}
+}`"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            formatted, _ = module.format_markdown(markdown, Path(temp_dir))
+
+        self.assertIn("```text\nget_sdk_reference -> search_nodes -> get_node_types -> validate_workflow -> create_workflow_from_code\n```", formatted)
+        self.assertIn("```\n\n不到 2 分钟，一个 13 节点的完整工作流就出现在我的 n8n 实例上了。", formatted)
+        self.assertIn("```json\n{\n\"mcpServers\": {", formatted)
+        self.assertNotIn("```text\n不到 2 分钟", formatted)
+
 
 class ImageUploadPipelineTests(unittest.TestCase):
     def test_load_s3_upload_config_from_environment(self):

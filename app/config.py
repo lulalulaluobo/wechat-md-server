@@ -59,6 +59,16 @@ DEFAULT_AI_BODY_TEMPLATE = """> [!summary] 一句话总结
 {{body_polish}}
 """
 DEFAULT_AI_CONTEXT_TEMPLATE = "{{content}}"
+DEFAULT_AI_CONTENT_POLISH_PROMPT = """请把正文整理为更适合 Obsidian 阅读的 Markdown。
+
+要求：
+1. 不改变原文事实、观点和结论
+2. 保留所有图片、链接、代码块、表格和列表
+3. 代码块必须使用三个反引号 fenced code block
+4. 表格必须输出为标准 Markdown 表格
+5. 适度优化标题层级、空行、列表结构和段落组织，提升阅读体验
+6. 不要输出解释，只返回润色后的正文 Markdown
+"""
 AI_TEMPLATE_SOURCE_VALUES = {"manual", "clipper_import"}
 
 
@@ -102,6 +112,8 @@ class Settings:
     ai_body_template: str = DEFAULT_AI_BODY_TEMPLATE
     ai_context_template: str = DEFAULT_AI_CONTEXT_TEMPLATE
     ai_allow_body_polish: bool = False
+    ai_enable_content_polish: bool = False
+    ai_content_polish_prompt: str = DEFAULT_AI_CONTENT_POLISH_PROMPT
     ai_template_source: str = "manual"
 
     @property
@@ -183,7 +195,7 @@ TELEGRAM_TEXT_FIELD_MAP = {
     "telegram_webhook_status": "webhook_status",
     "telegram_webhook_message": "webhook_message",
 }
-AI_BOOL_FIELDS = {"ai_enabled", "ai_allow_body_polish"}
+AI_BOOL_FIELDS = {"ai_enabled", "ai_allow_body_polish", "ai_enable_content_polish"}
 AI_TEXT_FIELDS = {
     "ai_base_url",
     "ai_model",
@@ -191,6 +203,7 @@ AI_TEXT_FIELDS = {
     "ai_frontmatter_template",
     "ai_body_template",
     "ai_context_template",
+    "ai_content_polish_prompt",
     "ai_template_source",
 }
 AI_SECRET_FIELDS = {"ai_api_key"}
@@ -425,6 +438,8 @@ def build_admin_settings_payload() -> dict[str, Any]:
         "ai_body_template": settings.ai_body_template,
         "ai_context_template": settings.ai_context_template,
         "ai_allow_body_polish": settings.ai_allow_body_polish,
+        "ai_enable_content_polish": settings.ai_enable_content_polish,
+        "ai_content_polish_prompt": settings.ai_content_polish_prompt,
         "ai_template_source": settings.ai_template_source,
         "runtime_overrides": runtime_overrides,
     }
@@ -500,6 +515,12 @@ def get_settings() -> Settings:
     ai_body_template = str(runtime_user_settings.get("ai_body_template") or os.environ.get("WECHAT_MD_AI_BODY_TEMPLATE") or DEFAULT_AI_BODY_TEMPLATE)
     ai_context_template = str(runtime_user_settings.get("ai_context_template") or os.environ.get("WECHAT_MD_AI_CONTEXT_TEMPLATE") or DEFAULT_AI_CONTEXT_TEMPLATE)
     ai_allow_body_polish = _as_bool(runtime_user_settings.get("ai_allow_body_polish"), default=False)
+    ai_enable_content_polish = _as_bool(runtime_user_settings.get("ai_enable_content_polish"), default=False)
+    ai_content_polish_prompt = str(
+        runtime_user_settings.get("ai_content_polish_prompt")
+        or os.environ.get("WECHAT_MD_AI_CONTENT_POLISH_PROMPT")
+        or DEFAULT_AI_CONTENT_POLISH_PROMPT
+    )
     ai_template_source = _normalize_ai_template_source(runtime_user_settings.get("ai_template_source"))
 
     return Settings(
@@ -540,6 +561,8 @@ def get_settings() -> Settings:
         ai_body_template=ai_body_template,
         ai_context_template=ai_context_template,
         ai_allow_body_polish=ai_allow_body_polish,
+        ai_enable_content_polish=ai_enable_content_polish,
+        ai_content_polish_prompt=ai_content_polish_prompt,
         ai_template_source=ai_template_source,
     )
 
@@ -608,6 +631,8 @@ def _normalize_user_settings(raw_settings: Any) -> dict[str, Any]:
         "ai_body_template": str(source.get("ai_body_template") or DEFAULT_AI_BODY_TEMPLATE),
         "ai_context_template": str(source.get("ai_context_template") or DEFAULT_AI_CONTEXT_TEMPLATE),
         "ai_allow_body_polish": _as_bool(source.get("ai_allow_body_polish"), default=False),
+        "ai_enable_content_polish": _as_bool(source.get("ai_enable_content_polish"), default=False),
+        "ai_content_polish_prompt": str(source.get("ai_content_polish_prompt") or DEFAULT_AI_CONTENT_POLISH_PROMPT),
         "ai_template_source": _normalize_ai_template_source(source.get("ai_template_source")),
         "image_mode": _normalize_image_mode(source.get("image_mode")),
         "image_storage": {
@@ -678,6 +703,8 @@ def _serialize_runtime_config(data: dict[str, Any]) -> dict[str, Any]:
             "ai_body_template": str(user_settings.get("ai_body_template") or DEFAULT_AI_BODY_TEMPLATE),
             "ai_context_template": str(user_settings.get("ai_context_template") or DEFAULT_AI_CONTEXT_TEMPLATE),
             "ai_allow_body_polish": _as_bool(user_settings.get("ai_allow_body_polish"), default=False),
+            "ai_enable_content_polish": _as_bool(user_settings.get("ai_enable_content_polish"), default=False),
+            "ai_content_polish_prompt": str(user_settings.get("ai_content_polish_prompt") or DEFAULT_AI_CONTENT_POLISH_PROMPT),
             "ai_template_source": _normalize_ai_template_source(user_settings.get("ai_template_source")),
             "image_mode": _normalize_image_mode(user_settings.get("image_mode")),
             "image_storage": {
@@ -768,6 +795,8 @@ def _validate_runtime_config(data: dict[str, Any]) -> None:
             missing_ai.append("ai_body_template")
         if not str(user_settings.get("ai_context_template") or "").strip():
             missing_ai.append("ai_context_template")
+        if _as_bool(user_settings.get("ai_enable_content_polish"), default=False) and not str(user_settings.get("ai_content_polish_prompt") or "").strip():
+            missing_ai.append("ai_content_polish_prompt")
         if missing_ai:
             raise ValueError("AI 润色配置不完整，缺少字段: " + ", ".join(missing_ai))
 

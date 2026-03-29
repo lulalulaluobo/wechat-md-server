@@ -155,6 +155,8 @@ def apply_ai_polish_to_markdown(
     body_template: str,
     context_template: str = "{{content}}",
     allow_body_polish: bool,
+    enable_content_polish: bool = False,
+    content_polish_prompt: str = "",
     http_session=None,
     timeout: int = 60,
 ) -> dict[str, Any]:
@@ -173,6 +175,9 @@ def apply_ai_polish_to_markdown(
         "tags": "",
         "my_understand": "",
         "body_polish": "",
+        "content_polished": "",
+        "content_polish_prompt_enabled": bool(enable_content_polish),
+        "content_polish_prompt": str(content_polish_prompt or "").strip(),
     }
     rendered_context = render_template(context_template, base_variables).strip() or base_variables["content"]
     prompt = _build_interpreter_prompt(
@@ -190,10 +195,16 @@ def apply_ai_polish_to_markdown(
         timeout=timeout,
     )
     normalized = _normalize_interpreted_variables(interpreted, allow_body_polish=allow_body_polish)
+    polished_content = str(normalized.get("content_polished") or "").strip()
+    final_content = original_content.strip()
+    if enable_content_polish and polished_content:
+        final_content = polished_content
     variables = {
         **base_variables,
         **normalized,
-        "content": original_content.strip(),
+        "content": final_content,
+        "content_raw": original_content.strip(),
+        "content_polished": polished_content,
     }
     frontmatter = render_template(
         normalized_frontmatter_template,
@@ -202,8 +213,8 @@ def apply_ai_polish_to_markdown(
     ).strip()
     body = render_template(normalized_body_template, variables).strip()
     sections = [section for section in (frontmatter, body) if section]
-    if "{{content}}" not in (normalized_body_template or ""):
-        sections.append(original_content.strip())
+    if "{{content}}" not in (normalized_body_template or "") and "{{content_polished}}" not in (normalized_body_template or ""):
+        sections.append(final_content)
     markdown_path.write_text("\n\n".join(sections).strip() + "\n", encoding="utf-8")
     return {
         "enabled": True,
@@ -212,6 +223,7 @@ def apply_ai_polish_to_markdown(
         "template_applied": True,
         "summary": normalized["summary"],
         "tags": normalized["tags"],
+        "content_polished": bool(enable_content_polish and polished_content),
         "message": "AI 润色已应用",
     }
 
@@ -227,6 +239,11 @@ def _build_interpreter_prompt(
     merged_prompts = {**template_variable_prompts}
     if parsed:
         merged_prompts.update(parsed)
+    if metadata.get("content_polish_prompt_enabled"):
+        merged_prompts.setdefault(
+            "content_polished",
+            str(metadata.get("content_polish_prompt") or "").strip(),
+        )
     if not merged_prompts:
         return render_template(
             interpreter_prompt,
@@ -307,6 +324,7 @@ def _normalize_interpreted_variables(payload: dict[str, Any], *, allow_body_poli
         "tags": deduped_tags,
         "my_understand": str(payload.get("my_understand") or "").strip(),
         "body_polish": str(payload.get("body_polish") or "").strip() if allow_body_polish else "",
+        "content_polished": str(payload.get("content_polished") or "").strip(),
     }
     for key, value in payload.items():
         if key in normalized:

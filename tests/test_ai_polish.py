@@ -131,6 +131,72 @@ class AIPolishTests(unittest.TestCase):
         self.assertIn("前置块", text)
         self.assertIn("后置块", text)
 
+    def test_apply_ai_polish_uses_content_polished_as_final_body_when_enabled(self):
+        markdown_path = Path(self.temp_dir.name) / "polished.md"
+        markdown_path.write_text("# 原文标题\n\n原始正文内容", encoding="utf-8")
+        metadata = {"title": "示例标题", "author": "作者", "url": "https://mp.weixin.qq.com/s/example"}
+
+        with patch(
+            "app.ai_polish.request_interpreter_variables",
+            return_value={
+                "summary": "一句话总结",
+                "tags": ["AI", "微信"],
+                "content_polished": "## 润色后正文\n\n- 更适合 Obsidian 阅读",
+            },
+        ):
+            apply_ai_polish_to_markdown(
+                markdown_path=markdown_path,
+                metadata=metadata,
+                ai_base_url="https://api.example.com/v1",
+                ai_api_key="ai-key",
+                ai_model="gpt-5.4-mini",
+                interpreter_prompt="请总结 {{title}}",
+                frontmatter_template="---\ntitle: {{title}}\nsummary: {{summary}}\ntags: {{tags}}\n---",
+                body_template="> [!summary]\n> {{summary}}",
+                context_template="{{content}}",
+                allow_body_polish=False,
+                enable_content_polish=True,
+                content_polish_prompt="请把正文整理为更适合 Obsidian 阅读的 Markdown",
+            )
+
+        text = markdown_path.read_text(encoding="utf-8")
+        self.assertIn("## 润色后正文", text)
+        self.assertIn("更适合 Obsidian 阅读", text)
+        self.assertNotIn("原始正文内容", text)
+
+    def test_apply_ai_polish_renders_content_placeholder_with_polished_body_when_enabled(self):
+        markdown_path = Path(self.temp_dir.name) / "clipper-polished.md"
+        markdown_path.write_text("# 原文标题\n\n原始正文内容", encoding="utf-8")
+        metadata = {"title": "示例标题", "author": "作者", "url": "https://mp.weixin.qq.com/s/example"}
+
+        with patch(
+            "app.ai_polish.request_interpreter_variables",
+            return_value={
+                "summary": "一句话总结",
+                "content_polished": "## 润色后正文\n\n- 更适合 Obsidian 阅读",
+            },
+        ):
+            apply_ai_polish_to_markdown(
+                markdown_path=markdown_path,
+                metadata=metadata,
+                ai_base_url="https://api.example.com/v1",
+                ai_api_key="ai-key",
+                ai_model="gpt-5.4-mini",
+                interpreter_prompt='{"summary":"一句话总结","content_polished":"请把正文整理为更适合 Obsidian 阅读的 Markdown"}',
+                frontmatter_template="---\ntitle: {{title}}\nsummary: {{summary}}\n---",
+                body_template="前置块\n\n{{content}}\n\n后置块",
+                context_template="{{content}}",
+                allow_body_polish=False,
+                enable_content_polish=True,
+                content_polish_prompt="请把正文整理为更适合 Obsidian 阅读的 Markdown",
+            )
+
+        text = markdown_path.read_text(encoding="utf-8")
+        self.assertIn("前置块", text)
+        self.assertIn("## 润色后正文", text)
+        self.assertNotIn("原始正文内容", text)
+        self.assertIn("后置块", text)
+
     def test_build_prompt_from_variable_prompts_includes_context_and_keys(self):
         prompt = build_prompt_from_variable_prompts(
             variable_prompts={"summary": "一句话总结", "clipper_block_1": "提炼五个要点"},

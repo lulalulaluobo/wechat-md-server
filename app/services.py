@@ -299,6 +299,7 @@ def build_config_payload() -> dict[str, Any]:
         "ai_enabled": settings.ai_enabled,
         "ai_configured": settings.ai_configured,
         "ai_model": settings.ai_model,
+        "ai_enable_content_polish": settings.ai_enable_content_polish,
         "ai_template_source": settings.ai_template_source,
     }
 
@@ -335,6 +336,8 @@ def apply_ai_polish_to_result(
         body_template=settings.ai_body_template,
         context_template=settings.ai_context_template,
         allow_body_polish=settings.ai_allow_body_polish,
+        enable_content_polish=settings.ai_enable_content_polish,
+        content_polish_prompt=settings.ai_content_polish_prompt,
         timeout=max(timeout, 60),
     )
     result["ai_polish"] = ai_result

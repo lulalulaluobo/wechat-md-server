@@ -158,6 +158,8 @@ class SettingsTests(unittest.TestCase):
                         "ai_context_template": "{{title}}\n\n{{content}}",
                         "ai_template_source": "clipper_import",
                         "ai_allow_body_polish": True,
+                        "ai_enable_content_polish": True,
+                        "ai_content_polish_prompt": "请把正文整理为更适合 Obsidian 阅读的 Markdown",
                     }
                 )
                 settings = get_settings()
@@ -168,8 +170,10 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.ai_base_url, "https://api.example.com/v1")
         self.assertEqual(settings.ai_model, "gpt-5.4-mini")
         self.assertTrue(settings.ai_allow_body_polish)
+        self.assertTrue(settings.ai_enable_content_polish)
         self.assertEqual(settings.ai_context_template, "{{title}}\n\n{{content}}")
         self.assertEqual(settings.ai_template_source, "clipper_import")
+        self.assertEqual(settings.ai_content_polish_prompt, "请把正文整理为更适合 Obsidian 阅读的 Markdown")
         self.assertEqual(runtime_data["user_settings"]["ai_model"], "gpt-5.4-mini")
         self.assertNotIn("ai-key-1", runtime_text)
         self.assertIn("ai_api_key_encrypted", runtime_text)
