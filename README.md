@@ -268,3 +268,24 @@ If the master key changes, encrypted runtime secrets can no longer be decrypted.
 - Do not commit integration output directories such as `_integration_output/` or `_integration_output_v2/`.
 - Do not commit `.env` or `data/runtime-config.json`.
 - Use [start-server.ps1](/path/to/wechat-md-server/scripts/start-server.ps1) for local Windows startup if you want a fixed command entrypoint.
+
+## Next Version Plan
+
+V3 is considered feature-complete for everyday use. The next iteration is expected to focus on operational polish rather than core article conversion features.
+
+Current candidates:
+
+- Feishu encrypted event payload support
+  - the current Feishu webhook flow works when `Encrypt Key` is cleared in the Feishu console
+  - long-term production use would benefit from full Feishu encrypted event decryption support
+- Feishu integration and troubleshooting guide
+  - document the exact event subscription setup, required permissions, whitelist bootstrap flow, and log-based debugging path
+- Better bot reply UX
+  - Telegram and Feishu currently use plain-text replies
+  - richer structured replies are optional future polish, not a blocker
+
+Recommended next step:
+
+- run V3 in production for a while
+- collect real usage feedback
+- then decide whether to prioritize Feishu encrypted webhook support or more detailed operations documentation
