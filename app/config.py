@@ -797,7 +797,6 @@ def get_settings() -> Settings:
         or DEFAULT_AI_CONTENT_POLISH_PROMPT
     )
     ai_template_source = _normalize_ai_template_source(runtime_user_settings.get("ai_template_source"))
-
     return Settings(
         default_output_dir=output_dir,
         runtime_config_path=runtime_config_path,

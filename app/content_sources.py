@@ -26,7 +26,7 @@ BROWSER_HEADERS = {
 
 
 def detect_source_type(url: str) -> str:
-    host = urlparse(str(url).strip()).netloc.lower()
+    host = _extract_host(url)
     if "mp.weixin.qq.com" in host or "weixin.qq.com" in host:
         return "wechat"
     if host.endswith("zhihu.com") or "zhihu.com" in host:
@@ -119,11 +119,18 @@ def _looks_like_unusable_article(article: ArticleData) -> bool:
     if title in {"", "[no-title]", "untitled"} and not text:
         return True
     return len(text) < 20 and not str(article.author or "").strip()
+
+
 def _read_response_text(response: Any) -> str:
     encoding = getattr(response, "encoding", None)
     if encoding in (None, "", "ISO-8859-1"):
         setattr(response, "encoding", "utf-8")
     return str(response.text)
+
+
+def _extract_host(url: str) -> str:
+    parsed = urlparse(str(url).strip())
+    return str(parsed.hostname or "").strip().lower()
 
 
 def _extract_title(document: Document, source_soup: BeautifulSoup) -> str:

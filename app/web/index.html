@@ -23,7 +23,7 @@
     <!-- Status Bar -->
     <div class="page-header" style="margin-bottom:12px;">
       <h1>转换中心</h1>
-      <p>粘贴公众号文章链接，一键转换为 Markdown 并同步到 Obsidian。</p>
+      <p>支持微信公众号，普通网页会尽力抓取；若目标站点无法抓取，会明确提示失败原因。</p>
     </div>
 
     <div class="card" style="padding:16px 20px;">
@@ -43,11 +43,11 @@
     <!-- Single Convert Card -->
     <div class="card">
       <h2 class="card-title">单篇转换</h2>
-      <p class="card-desc">粘贴一条微信文章链接开始转换。</p>
+      <p class="card-desc">粘贴一条公众号链接，或普通网页链接开始转换。高风险站点不保证成功率。</p>
 
       <div class="field">
         <label for="single-url">文章链接</label>
-        <input id="single-url" placeholder="https://mp.weixin.qq.com/s/...">
+        <input id="single-url" placeholder="https://mp.weixin.qq.com/s/... 或 https://your-host/article">
       </div>
 
       <button class="advanced-toggle" data-toggle-advanced="single-advanced" aria-expanded="false">
@@ -85,11 +85,11 @@
     <!-- Batch Convert Card -->
     <div class="card">
       <h2 class="card-title">批量转换</h2>
-      <p class="card-desc">每行一条链接，或导入文件批量处理。</p>
+      <p class="card-desc">每行一条公众号链接或普通网页链接；导入文件也遵循相同规则。</p>
 
       <div class="field">
         <label for="batch-urls">文章链接</label>
-        <textarea id="batch-urls" placeholder="每行一个微信文章链接&#10;https://mp.weixin.qq.com/s/...&#10;https://mp.weixin.qq.com/s/..."></textarea>
+        <textarea id="batch-urls" placeholder="每行一个公众号链接或普通网页链接&#10;https://mp.weixin.qq.com/s/...&#10;https://your-host/article"></textarea>
       </div>
       <div class="field">
         <label for="batch-file">导入文件（txt / md / csv）</label>
@@ -147,8 +147,8 @@
       return `已启用 / ${config.ai_model || "-"}`;
     }
 
-    function extractWechatLink(text) {
-      const matches = String(text || "").match(/https?:\/\/mp\.weixin\.qq\.com\/s(?:[/?][^\s)>]+)?/ig) || [];
+    function extractSupportedLink(text) {
+      const matches = String(text || "").match(/https?:\/\/[^\s<>\"]+/ig) || [];
       return matches[0] || "";
     }
 
@@ -225,9 +225,9 @@
     document.getElementById("single-paste").addEventListener("click", async () => {
       try {
         const text = await navigator.clipboard.readText();
-        const url = extractWechatLink(text);
+        const url = extractSupportedLink(text);
         if (!url) {
-          AdminUI.toast("剪贴板中未识别到可用的微信文章链接", "warn");
+          AdminUI.toast("剪贴板中未识别到可用链接", "warn");
           return;
         }
         document.getElementById("single-url").value = url;

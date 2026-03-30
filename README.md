@@ -135,9 +135,23 @@ Optional environment variables:
   - optional `content_polished` body output
 - AI body polish is opt-in and can be overridden per single/batch run.
 - The settings page supports Clipper-style template import from a JSON file and maps it into the internal interpreter template fields.
+- Generic web uses best-effort extraction: successful pages continue through the pipeline, failed pages return a clear fetch/extraction error.
 - The task history page supports filtering by trigger channel, source type, and status.
 - Failed tasks can be rerun individually, and selected tasks can be rerun in batch.
 - Task history is stored separately from runtime config in `task-history.jsonl`.
+
+## High-Risk / Unsupported Sites
+
+- Directly unsupported:
+  - `zhihu.com`
+- Known high-risk, not guaranteed to work:
+  - `post.smzdm.com`
+- High-risk categories include:
+  - strong anti-bot / WAF protection
+  - pages that require client-side rendering to reveal article content
+  - login-gated article pages
+  - community / Q&A / feed-style sites
+  - short-card or snippet-heavy pages
 
 ## Task History
 
@@ -197,7 +211,7 @@ Optional environment variables:
 - Feishu Bot webhook is supported for single-article conversion.
 - Both bot flows:
   - accept one link per message
-  - support WeChat and generic web links
+  - support WeChat links and generic web links
   - immediately acknowledge receipt
   - run conversion asynchronously
   - send a completion reply with title, sync path, and image mode

@@ -404,9 +404,10 @@ def submit_rerun_task(task_id: str) -> dict[str, Any]:
         raise KeyError(f"任务不存在: {task_id}")
     url = str(original.get("source_url") or "").strip()
     trigger_channel = str(original.get("trigger_channel") or "web").strip() or "web"
+    source_type = detect_source_type(url)
     rerun_task = get_task_history_store().create_task(
         trigger_channel=trigger_channel,
-        source_type=str(original.get("source_type") or detect_source_type(url)),
+        source_type=source_type,
         source_url=url,
         rerun_of_task_id=task_id,
     )
@@ -981,6 +982,8 @@ def extract_single_wechat_url(text: str) -> tuple[str | None, int]:
         seen.add(item)
         unique_links.append(item)
     return unique_links[0], len(unique_links)
+
+
 
 
 def configure_feishu_webhook_state() -> dict[str, Any]:
