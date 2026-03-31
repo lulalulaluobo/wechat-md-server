@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Cookie, FastAPI, Request
@@ -8,9 +9,19 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import is_authenticated, router
 from app.auth import SESSION_COOKIE_NAME
+from app.scheduler import start_scheduler, stop_scheduler
 
 
-app = FastAPI(title="wechat-md-server", version="0.1.0")
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    start_scheduler()
+    try:
+        yield
+    finally:
+        stop_scheduler()
+
+
+app = FastAPI(title="wechat-md-server", version="0.1.0", lifespan=lifespan)
 app.include_router(router)
 WEB_DIR = Path(__file__).resolve().parent / "web"
 app.mount("/assets", StaticFiles(directory=WEB_DIR / "assets"), name="assets")
@@ -22,6 +33,9 @@ async def add_security_headers(request: Request, call_next):
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("Referrer-Policy", "same-origin")
+    path = request.url.path
+    if path.endswith(".html") or path.endswith(".js") or path.endswith(".css") or path in {"/", "/login", "/settings", "/sync", "/articles", "/tasks"}:
+        response.headers["Cache-Control"] = "no-store"
     return response
 
 

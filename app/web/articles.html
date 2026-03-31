@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/assets/admin.css">
+  <link rel="stylesheet" href="/assets/admin.css?v=20260331d">
 </head>
 <body>
   <nav class="top-nav">
@@ -70,18 +70,57 @@
         </div>
       </div>
       <label class="check-row" style="margin-top:8px;">
-        <input id="ingest-ai-enabled" type="checkbox">
-        批量入队时启用 AI 润色
-      </label>
-      <label class="check-row" style="margin-top:8px;">
         <input id="ingest-skip-ingested" type="checkbox" checked>
         跳过已入库文章
       </label>
       <div class="action-row">
         <button id="refresh-articles" class="btn btn-secondary">刷新列表</button>
+        <button id="select-filtered" class="btn btn-ghost">全选当前筛选结果</button>
+        <button id="clear-selection" class="btn btn-ghost">清空选择</button>
+        <button id="delete-selected" class="btn btn-danger">删除记录</button>
         <button id="ingest-selected" class="btn btn-primary">批量加入处理队列</button>
       </div>
       <div id="articles-result-area"></div>
+    </div>
+
+    <div class="card">
+      <h2 class="card-title">全局执行计划</h2>
+      <p class="card-desc">只处理文章库中“未执行”的文章；是否启用 AI 仍由设置页全局配置决定。</p>
+      <div class="field-row">
+        <div class="field">
+          <label for="article-ingest-frequency">频率</label>
+          <select id="article-ingest-frequency">
+            <option value="daily">每日</option>
+            <option value="weekly">每周</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="article-ingest-time">时间</label>
+          <input id="article-ingest-time" type="time" value="00:00">
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field" id="article-ingest-weekday-field">
+          <label for="article-ingest-day-of-week">每周</label>
+          <select id="article-ingest-day-of-week">
+            <option value="1">周一</option>
+            <option value="2">周二</option>
+            <option value="3">周三</option>
+            <option value="4">周四</option>
+            <option value="5">周五</option>
+            <option value="6">周六</option>
+            <option value="7">周日</option>
+          </select>
+        </div>
+      </div>
+      <label class="check-row" style="margin-bottom:12px;">
+        <input id="article-ingest-enabled" type="checkbox">
+        启用全局执行计划
+      </label>
+      <div class="action-row">
+        <button id="save-article-ingest-schedule" class="btn btn-primary">保存执行计划</button>
+      </div>
+      <div id="article-ingest-schedule-area"></div>
     </div>
 
     <div class="card">
@@ -113,9 +152,9 @@
     </div>
   </div>
 
-  <script src="/assets/admin.js"></script>
+  <script src="/assets/admin.js?v=20260331d"></script>
   <script>
-    const state = { items: [], sources: [], ingestJobId: "" };
+    const state = { items: [], sources: [], ingestJobId: "", schedules: {}, filteredSelection: false };
     const initialParams = new URLSearchParams(window.location.search);
 
     function dateToTimestamp(inputId, isEnd) {
@@ -130,9 +169,68 @@
       return new Date(value * 1000).toLocaleString("zh-CN", { hour12: false });
     }
 
+    function formatLocalDateTime(value) {
+      if (!value) return "-";
+      const parsed = new Date(value);
+      if (Number.isNaN(parsed.getTime())) return value;
+      return parsed.toLocaleString("zh-CN", {
+        hour12: false,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+      }).replace(/\//g, "-");
+    }
+
+    function buildFilters() {
+      return {
+        account_fakeid: document.getElementById("filter-account").value || "",
+        process_status: document.getElementById("filter-process-status").value || "",
+        is_ingested: document.getElementById("filter-ingested").value === "" ? null : document.getElementById("filter-ingested").value === "true",
+        has_execution: document.getElementById("filter-has-execution").value === "" ? null : document.getElementById("filter-has-execution").value === "true",
+        published_from: dateToTimestamp("filter-start-date", false),
+        published_to: dateToTimestamp("filter-end-date", true),
+        source_id: initialParams.get("source_id") || "",
+        sync_run_id: initialParams.get("sync_run_id") || "",
+      };
+    }
+
+    function getSelectionPayload() {
+      if (state.filteredSelection) {
+        return { mode: "filtered", filters: buildFilters() };
+      }
+      const articleIds = Array.from(document.querySelectorAll(".article-selector:checked")).map((node) => node.value);
+      return { mode: "ids", article_ids: articleIds };
+    }
+
     function renderAccountsFilter() {
       const select = document.getElementById("filter-account");
       select.innerHTML = `<option value="">全部</option>` + state.sources.map((item) => `<option value="${item.account_fakeid}">${AdminUI.escapeHtml(item.account_name || item.account_fakeid || "-")}</option>`).join("");
+    }
+
+    function renderSchedule(schedule) {
+      if (!schedule) return;
+      document.getElementById("article-ingest-enabled").checked = Boolean(schedule.enabled);
+      document.getElementById("article-ingest-frequency").value = schedule.frequency || "daily";
+      document.getElementById("article-ingest-time").value = schedule.time_of_day || "00:00";
+      document.getElementById("article-ingest-day-of-week").value = String(schedule.day_of_week || 1);
+      syncScheduleFieldVisibility();
+      AdminUI.setHtml("article-ingest-schedule-area", AdminUI.resultHtml({
+        title: schedule.enabled ? "执行计划已启用" : "执行计划未启用",
+        tone: schedule.enabled ? "success" : "info",
+        items: [
+          { label: "频率", value: schedule.frequency || "-" },
+          { label: "最近执行", value: formatLocalDateTime(schedule.last_run_at) },
+          { label: "最近状态", value: schedule.last_status || "-" },
+        ],
+        json: schedule.recent_runs || [],
+      }));
+    }
+
+    function syncScheduleFieldVisibility() {
+      const isWeekly = document.getElementById("article-ingest-frequency").value === "weekly";
+      document.getElementById("article-ingest-weekday-field").classList.toggle("hidden", !isWeekly);
     }
 
     function renderArticleRows() {
@@ -145,7 +243,7 @@
           : "未执行";
         const row = document.createElement("tr");
         row.innerHTML = `
-          <td style="padding:10px 8px;"><input type="checkbox" class="article-selector" value="${AdminUI.escapeHtml(item.id)}"></td>
+          <td style="padding:10px 8px;"><input type="checkbox" class="article-selector" value="${AdminUI.escapeHtml(item.id)}" ${state.filteredSelection ? "checked" : ""}></td>
           <td style="padding:10px 8px;">${AdminUI.escapeHtml(item.title || "-")}</td>
           <td style="padding:10px 8px;">${AdminUI.escapeHtml(item.account_name || "-")}</td>
           <td style="padding:10px 8px;">${AdminUI.escapeHtml(formatTimestamp(item.publish_time))}</td>
@@ -159,6 +257,13 @@
           <td style="padding:10px 8px;"><a href="${AdminUI.escapeHtml(item.article_url || "#")}" target="_blank" rel="noreferrer">查看链接</a></td>
         `;
         body.appendChild(row);
+      });
+      document.querySelectorAll(".article-selector").forEach((checkbox) => {
+        checkbox.addEventListener("change", () => {
+          if (checkbox.checked) {
+            state.filteredSelection = false;
+          }
+        });
       });
       document.querySelectorAll(".article-history-btn").forEach((button) => {
         button.addEventListener("click", () => loadArticleExecutions(button.getAttribute("data-article-id")));
@@ -174,22 +279,15 @@
 
     async function loadArticles() {
       const params = new URLSearchParams();
-      const accountFakeid = document.getElementById("filter-account").value;
-      const processStatus = document.getElementById("filter-process-status").value;
-      const ingested = document.getElementById("filter-ingested").value;
-      const hasExecution = document.getElementById("filter-has-execution").value;
-      const startTs = dateToTimestamp("filter-start-date", false);
-      const endTs = dateToTimestamp("filter-end-date", true);
-      const sourceId = initialParams.get("source_id") || "";
-      const syncRunId = initialParams.get("sync_run_id") || "";
-      if (accountFakeid) params.set("account_fakeid", accountFakeid);
-      if (processStatus) params.set("process_status", processStatus);
-      if (ingested) params.set("is_ingested", ingested);
-      if (hasExecution) params.set("has_execution", hasExecution);
-      if (startTs != null) params.set("published_from", String(startTs));
-      if (endTs != null) params.set("published_to", String(endTs));
-      if (sourceId) params.set("source_id", sourceId);
-      if (syncRunId) params.set("sync_run_id", syncRunId);
+      const filters = buildFilters();
+      if (filters.account_fakeid) params.set("account_fakeid", filters.account_fakeid);
+      if (filters.process_status) params.set("process_status", filters.process_status);
+      if (filters.is_ingested != null) params.set("is_ingested", String(filters.is_ingested));
+      if (filters.has_execution != null) params.set("has_execution", String(filters.has_execution));
+      if (filters.published_from != null) params.set("published_from", String(filters.published_from));
+      if (filters.published_to != null) params.set("published_to", String(filters.published_to));
+      if (filters.source_id) params.set("source_id", filters.source_id);
+      if (filters.sync_run_id) params.set("sync_run_id", filters.sync_run_id);
       params.set("limit", "200");
       const res = await fetch(`/api/sync/articles?${params.toString()}`);
       const data = await res.json();
@@ -199,6 +297,11 @@
       }
       state.items = data.items || [];
       renderArticleRows();
+      AdminUI.setHtml("articles-result-area", AdminUI.resultHtml({
+        title: state.filteredSelection ? "当前为全选筛选结果模式" : "文章列表已刷新",
+        tone: "info",
+        description: `当前筛选共 ${data.total || 0} 条记录，页面加载 ${state.items.length || 0} 条。`,
+      }));
     }
 
     async function loadArticleExecutions(articleId) {
@@ -237,18 +340,28 @@
       }
     }
 
+    async function loadSchedules() {
+      const res = await fetch("/api/admin/schedules");
+      const data = await res.json();
+      if (!res.ok) {
+        AdminUI.toast(data.detail || "执行计划读取失败", "error");
+        return;
+      }
+      state.schedules = data;
+      renderSchedule(data.article_ingest_schedule || null);
+    }
+
     document.getElementById("ingest-selected").addEventListener("click", async () => {
-      const articleIds = Array.from(document.querySelectorAll(".article-selector:checked")).map((node) => node.value);
-      if (!articleIds.length) {
+      const selection = getSelectionPayload();
+      if (selection.mode === "ids" && !(selection.article_ids || []).length) {
         AdminUI.toast("请先选择文章", "warn");
         return;
       }
       const res = await fetch("/api/sync/articles/ingest", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: AdminUI.buildJsonHeaders(),
         body: JSON.stringify({
-          article_ids: articleIds,
-          ai_enabled: document.getElementById("ingest-ai-enabled").checked,
+          selection,
           output_target: "fns",
           skip_ingested: document.getElementById("ingest-skip-ingested").checked,
         }),
@@ -262,6 +375,85 @@
       await pollIngestJob(data.id);
     });
 
+    document.getElementById("delete-selected").addEventListener("click", async () => {
+      const selection = getSelectionPayload();
+      if (selection.mode === "ids" && !(selection.article_ids || []).length) {
+        AdminUI.toast("请先选择文章", "warn");
+        return;
+      }
+      const res = await fetch("/api/sync/articles/delete", {
+        method: "POST",
+        headers: AdminUI.buildJsonHeaders(),
+        body: JSON.stringify({ selection }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        AdminUI.toast(data.detail || "删除记录失败", "error");
+        return;
+      }
+      state.filteredSelection = false;
+      AdminUI.toast("记录已删除", "success");
+      AdminUI.setHtml("articles-result-area", AdminUI.resultHtml({
+        title: "删除完成",
+        tone: "success",
+        items: [{ label: "删除数量", value: data.deleted_count || 0 }],
+        json: data,
+      }));
+      await loadArticles();
+    });
+
+    document.getElementById("select-filtered").addEventListener("click", async () => {
+      state.filteredSelection = true;
+      document.querySelectorAll(".article-selector").forEach((node) => { node.checked = true; });
+      const params = new URLSearchParams();
+      const filters = buildFilters();
+      if (filters.account_fakeid) params.set("account_fakeid", filters.account_fakeid);
+      if (filters.process_status) params.set("process_status", filters.process_status);
+      if (filters.is_ingested != null) params.set("is_ingested", String(filters.is_ingested));
+      if (filters.has_execution != null) params.set("has_execution", String(filters.has_execution));
+      if (filters.published_from != null) params.set("published_from", String(filters.published_from));
+      if (filters.published_to != null) params.set("published_to", String(filters.published_to));
+      if (filters.source_id) params.set("source_id", filters.source_id);
+      if (filters.sync_run_id) params.set("sync_run_id", filters.sync_run_id);
+      params.set("limit", "1");
+      const res = await fetch(`/api/sync/articles?${params.toString()}`);
+      const data = await res.json();
+      AdminUI.setHtml("articles-result-area", AdminUI.resultHtml({
+        title: "已全选当前筛选结果",
+        tone: "success",
+        description: `后续批量执行或删除会作用于当前筛选命中的全部 ${data.total || 0} 条记录，而不只是本页可见文章。`,
+      }));
+    });
+
+    document.getElementById("clear-selection").addEventListener("click", () => {
+      state.filteredSelection = false;
+      document.querySelectorAll(".article-selector").forEach((node) => { node.checked = false; });
+      AdminUI.toast("已清空选择", "info");
+    });
+
+    document.getElementById("save-article-ingest-schedule").addEventListener("click", async () => {
+      const res = await fetch("/api/admin/schedules", {
+        method: "PUT",
+        headers: AdminUI.buildJsonHeaders(),
+        body: JSON.stringify({
+          article_ingest_schedule: {
+            enabled: document.getElementById("article-ingest-enabled").checked,
+            frequency: document.getElementById("article-ingest-frequency").value,
+            time_of_day: document.getElementById("article-ingest-time").value || "00:00",
+            day_of_week: Number(document.getElementById("article-ingest-day-of-week").value || "1"),
+            timezone: "Asia/Shanghai",
+          },
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        AdminUI.toast(data.detail || "保存执行计划失败", "error");
+        return;
+      }
+      AdminUI.toast("执行计划已保存", "success");
+      renderSchedule(data.article_ingest_schedule || null);
+    });
+
     document.getElementById("refresh-articles").addEventListener("click", loadArticles);
     document.getElementById("filter-account").addEventListener("change", loadArticles);
     document.getElementById("filter-process-status").addEventListener("change", loadArticles);
@@ -269,12 +461,15 @@
     document.getElementById("filter-has-execution").addEventListener("change", loadArticles);
     document.getElementById("filter-start-date").addEventListener("change", loadArticles);
     document.getElementById("filter-end-date").addEventListener("change", loadArticles);
+    document.getElementById("article-ingest-frequency").addEventListener("change", syncScheduleFieldVisibility);
     document.getElementById("logout-btn").addEventListener("click", async () => {
       await fetch("/api/session", { method: "DELETE" });
       window.location.href = "/login";
     });
 
     loadSources().then(loadArticles);
+    loadSchedules();
+    syncScheduleFieldVisibility();
   </script>
 </body>
 </html>

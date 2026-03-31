@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/assets/admin.css">
+  <link rel="stylesheet" href="/assets/admin.css?v=20260331d">
 </head>
 <body>
   <nav class="top-nav">
@@ -27,7 +27,12 @@
 
     <div class="card">
       <h2 class="card-title">公众号后台凭据</h2>
-      <p class="card-desc">第一版使用手动配置的公众号后台 token / cookie，不在页面内做扫码登录。</p>
+      <p class="card-desc">默认优先使用扫码登录；手动填写 token / cookie 仍保留为降级入口。</p>
+      <div class="action-row" style="margin-bottom:12px;">
+        <button id="start-qr-login" class="btn btn-primary">微信扫码登录</button>
+        <button id="check-login-status" class="btn btn-secondary">检查登录状态</button>
+      </div>
+      <div id="wechat-qr-result-area"></div>
       <div class="field-row">
         <div class="field">
           <label for="wechat-mp-token">Token</label>
@@ -36,7 +41,7 @@
         </div>
         <div class="field">
           <label>&nbsp;</label>
-          <button id="check-login-status" class="btn btn-secondary" style="width:100%;">检查登录状态</button>
+          <div class="text-sm text-muted" style="padding-top:10px;">扫码成功后这里会自动显示“已配置”。</div>
         </div>
       </div>
       <div class="field">
@@ -50,6 +55,46 @@
         <button id="save-wechat-mp-config" class="btn btn-primary">保存凭据</button>
       </div>
       <div id="wechat-mp-result-area"></div>
+    </div>
+
+    <div class="card">
+      <h2 class="card-title">全局同步计划</h2>
+      <p class="card-desc">这里只做索引增量同步，不直接执行清洗、AI 或入库。</p>
+      <div class="field-row">
+        <div class="field">
+          <label for="source-sync-frequency">频率</label>
+          <select id="source-sync-frequency">
+            <option value="daily">每日</option>
+            <option value="weekly">每周</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="source-sync-time">时间</label>
+          <input id="source-sync-time" type="time" value="00:00">
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field" id="source-sync-weekday-field">
+          <label for="source-sync-day-of-week">每周</label>
+          <select id="source-sync-day-of-week">
+            <option value="1">周一</option>
+            <option value="2">周二</option>
+            <option value="3">周三</option>
+            <option value="4">周四</option>
+            <option value="5">周五</option>
+            <option value="6">周六</option>
+            <option value="7">周日</option>
+          </select>
+        </div>
+      </div>
+      <label class="check-row" style="margin-bottom:12px;">
+        <input id="source-sync-enabled" type="checkbox">
+        启用全局索引同步计划
+      </label>
+      <div class="action-row">
+        <button id="save-source-sync-schedule" class="btn btn-primary">保存同步计划</button>
+      </div>
+      <div id="source-sync-schedule-area"></div>
     </div>
 
     <div class="card">
@@ -118,10 +163,24 @@
     </div>
   </div>
 
-  <script src="/assets/admin.js"></script>
+  <script src="/assets/admin.js?v=20260331d"></script>
   <script>
     const clearFields = new Set();
-    const state = { searchItems: [], sources: [] };
+    const state = { searchItems: [], sources: [], schedules: {}, qrSessionId: "" };
+
+    function formatLocalDateTime(value) {
+      if (!value) return "-";
+      const parsed = new Date(value);
+      if (Number.isNaN(parsed.getTime())) return value;
+      return parsed.toLocaleString("zh-CN", {
+        hour12: false,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+      }).replace(/\//g, "-");
+    }
 
     function rangePayload() {
       return {
@@ -150,7 +209,7 @@
           if (!account) return;
           const res = await fetch("/api/sync/sources", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: AdminUI.buildJsonHeaders(),
             body: JSON.stringify(account),
           });
           const data = await res.json();
@@ -172,7 +231,7 @@
         row.innerHTML = `
           <td style="padding:10px 8px;">${AdminUI.escapeHtml(item.account_name || "-")}</td>
           <td style="padding:10px 8px;">${AdminUI.escapeHtml(item.account_fakeid || "-")}</td>
-          <td style="padding:10px 8px;">${AdminUI.escapeHtml(item.last_sync_at || "-")}</td>
+          <td style="padding:10px 8px;">${AdminUI.escapeHtml(formatLocalDateTime(item.last_sync_at))}</td>
           <td style="padding:10px 8px;">${AdminUI.escapeHtml((item.last_range_start || "-") + " ~ " + (item.last_range_end || "-"))}</td>
           <td style="padding:10px 8px; display:flex; gap:8px; flex-wrap:wrap;">
             <button class="btn btn-secondary source-sync-manual" data-source-id="${AdminUI.escapeHtml(item.id)}">首次/范围同步</button>
@@ -191,7 +250,10 @@
       document.querySelectorAll(".source-delete").forEach((button) => {
         button.addEventListener("click", async () => {
           const sourceId = button.getAttribute("data-source-id");
-          const res = await fetch(`/api/sync/sources/${sourceId}`, { method: "DELETE" });
+          const res = await fetch(`/api/sync/sources/${sourceId}`, {
+            method: "DELETE",
+            headers: { "X-CSRF-Token": AdminUI.getCsrfToken() },
+          });
           const data = await res.json();
           if (!res.ok) {
             AdminUI.toast(data.detail || "删除失败", "error");
@@ -214,7 +276,7 @@
       }
       const res = await fetch(`/api/sync/sources/${sourceId}/sync`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: AdminUI.buildJsonHeaders(),
         body: JSON.stringify(payload),
       });
       const data = await res.json();
@@ -254,6 +316,80 @@
       renderSourcesRows();
     }
 
+    function renderSourceSchedule(schedule) {
+      if (!schedule) return;
+      document.getElementById("source-sync-enabled").checked = Boolean(schedule.enabled);
+      document.getElementById("source-sync-frequency").value = schedule.frequency || "daily";
+      document.getElementById("source-sync-time").value = schedule.time_of_day || "00:00";
+      document.getElementById("source-sync-day-of-week").value = String(schedule.day_of_week || 1);
+      syncScheduleFieldVisibility();
+      AdminUI.setHtml("source-sync-schedule-area", AdminUI.resultHtml({
+        title: schedule.enabled ? "同步计划已启用" : "同步计划未启用",
+        tone: schedule.enabled ? "success" : "info",
+        items: [
+          { label: "频率", value: schedule.frequency || "-" },
+          { label: "最近执行", value: formatLocalDateTime(schedule.last_run_at) },
+          { label: "最近状态", value: schedule.last_status || "-" },
+        ],
+        json: schedule.recent_runs || [],
+      }));
+    }
+
+    function syncScheduleFieldVisibility() {
+      const isWeekly = document.getElementById("source-sync-frequency").value === "weekly";
+      document.getElementById("source-sync-weekday-field").classList.toggle("hidden", !isWeekly);
+    }
+
+    async function loadSchedules() {
+      const res = await fetch("/api/admin/schedules");
+      const data = await res.json();
+      if (!res.ok) {
+        AdminUI.toast(data.detail || "调度配置读取失败", "error");
+        return;
+      }
+      state.schedules = data;
+      renderSourceSchedule(data.source_sync_schedule || null);
+    }
+
+    async function pollQrLoginStatus(sessionId) {
+      state.qrSessionId = sessionId;
+      const res = await fetch(`/api/sync/login/qr/${sessionId}`);
+      const data = await res.json();
+      if (!res.ok) {
+        AdminUI.toast(data.detail || "扫码状态获取失败", "error");
+        return;
+      }
+      AdminUI.setHtml("wechat-qr-result-area", AdminUI.resultHtml({
+        title: "扫码登录进行中",
+        tone: data.status === "confirmed" ? "success" : data.status === "scanned" ? "info" : "info",
+        description: data.message || "请在微信中扫码并确认登录。",
+        items: [{ label: "会话", value: sessionId }, { label: "状态", value: data.status || "-" }],
+      }));
+      if (data.status === "confirmed") {
+        const confirmRes = await fetch(`/api/sync/login/qr/${sessionId}/confirm`, {
+          method: "POST",
+          headers: { "X-CSRF-Token": AdminUI.getCsrfToken() },
+        });
+        const confirmData = await confirmRes.json();
+        if (!confirmRes.ok) {
+          AdminUI.toast(confirmData.detail || "登录确认失败", "error");
+          return;
+        }
+        AdminUI.toast("扫码登录成功", "success");
+        AdminUI.setHtml("wechat-qr-result-area", AdminUI.resultHtml({
+          title: "扫码登录成功",
+          tone: "success",
+          description: confirmData.message || "公众号后台凭据已更新。",
+          items: [{ label: "会话", value: sessionId }, { label: "状态", value: confirmData.status || "-" }],
+        }));
+        await loadSyncConfig();
+        return;
+      }
+      if (data.status === "pending" || data.status === "scanned") {
+        setTimeout(() => pollQrLoginStatus(sessionId), 2500);
+      }
+    }
+
     document.getElementById("search-account-btn").addEventListener("click", async () => {
       const keyword = document.getElementById("search-keyword").value.trim();
       if (!keyword) {
@@ -285,7 +421,7 @@
       if (cookie) payload.wechat_mp_cookie = cookie;
       const res = await fetch("/api/sync/config", {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
+        headers: AdminUI.buildJsonHeaders(),
         body: JSON.stringify(payload),
       });
       const data = await res.json();
@@ -300,6 +436,36 @@
         json: data,
       }));
       await loadSyncConfig();
+    });
+
+    document.getElementById("start-qr-login").addEventListener("click", async () => {
+      const res = await fetch("/api/sync/login/qr/start", {
+        method: "POST",
+        headers: { "X-CSRF-Token": AdminUI.getCsrfToken() },
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        AdminUI.toast(data.detail || "扫码登录初始化失败", "error");
+        AdminUI.setHtml("wechat-qr-result-area", AdminUI.resultHtml({
+          title: "扫码登录初始化失败",
+          tone: "error",
+          description: data.detail || "微信侧没有返回可用二维码，请暂时使用手动 token / cookie。",
+          json: data,
+        }));
+        return;
+      }
+      AdminUI.setHtml("wechat-qr-result-area", AdminUI.resultHtml({
+        title: "请使用微信扫码",
+        tone: "info",
+        description: "扫码后请在微信里确认登录。",
+        items: [{ label: "会话", value: data.session_id || "-" }],
+        json: data,
+      }));
+      if (data.qrcode_url) {
+        const image = `<div style="margin-top:12px;"><img alt="微信扫码登录二维码" src="${AdminUI.escapeHtml(data.qrcode_url)}" style="max-width:220px; border-radius:12px; border:1px solid var(--border);"></div>`;
+        document.getElementById("wechat-qr-result-area").insertAdjacentHTML("beforeend", image);
+      }
+      pollQrLoginStatus(data.session_id);
     });
 
     document.getElementById("check-login-status").addEventListener("click", async () => {
@@ -317,6 +483,30 @@
       }));
     });
 
+    document.getElementById("save-source-sync-schedule").addEventListener("click", async () => {
+      const payload = {
+        source_sync_schedule: {
+          enabled: document.getElementById("source-sync-enabled").checked,
+          frequency: document.getElementById("source-sync-frequency").value,
+          time_of_day: document.getElementById("source-sync-time").value || "00:00",
+          day_of_week: Number(document.getElementById("source-sync-day-of-week").value || "1"),
+          timezone: "Asia/Shanghai",
+        },
+      };
+      const res = await fetch("/api/admin/schedules", {
+        method: "PUT",
+        headers: AdminUI.buildJsonHeaders(),
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        AdminUI.toast(data.detail || "保存同步计划失败", "error");
+        return;
+      }
+      AdminUI.toast("同步计划已保存", "success");
+      renderSourceSchedule(data.source_sync_schedule || null);
+    });
+
     document.getElementById("clear-wechat-mp-token").addEventListener("click", () => {
       clearFields.add("wechat_mp_token");
       document.getElementById("wechat-mp-token").value = "";
@@ -329,6 +519,8 @@
       document.getElementById("wechat-mp-cookie-meta").textContent = "保存时将清空 Cookie";
     });
 
+    document.getElementById("source-sync-frequency").addEventListener("change", syncScheduleFieldVisibility);
+
     document.getElementById("logout-btn").addEventListener("click", async () => {
       await fetch("/api/session", { method: "DELETE" });
       window.location.href = "/login";
@@ -336,6 +528,8 @@
 
     loadSyncConfig();
     loadSources();
+    loadSchedules();
+    syncScheduleFieldVisibility();
   </script>
 </body>
 </html>

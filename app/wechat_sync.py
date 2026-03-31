@@ -4,6 +4,8 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, time, timezone
 from typing import Any
+import random
+import time as time_module
 
 import requests
 
@@ -25,10 +27,10 @@ class SyncRange:
 
 
 class WechatMPClient:
-    def __init__(self, http_session=None) -> None:
+    def __init__(self, *, token: str | None = None, cookie: str | None = None, http_session=None) -> None:
         settings = get_settings()
-        self.token = str(settings.wechat_mp_token or "").strip()
-        self.cookie = str(settings.wechat_mp_cookie or "").strip()
+        self.token = str(token if token is not None else settings.wechat_mp_token or "").strip()
+        self.cookie = str(cookie if cookie is not None else settings.wechat_mp_cookie or "").strip()
         self.timeout = max(settings.default_timeout, 20)
         self.session = http_session or requests.Session()
         self.session.headers.update(
@@ -51,6 +53,7 @@ class WechatMPClient:
 
     def _request(self, endpoint: str, *, params: dict[str, Any]) -> dict[str, Any]:
         self._ensure_configured()
+        time_module.sleep(random.uniform(3.0, 8.0))
         response = self.session.get(endpoint, params=params, timeout=self.timeout, allow_redirects=True)
         response.raise_for_status()
         try:

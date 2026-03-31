@@ -3,6 +3,7 @@ from __future__ import annotations
 import multiprocessing as mp
 import os
 import queue
+import random
 import re
 import shutil
 import threading
@@ -11,6 +12,8 @@ import traceback
 import uuid
 import json
 import hashlib
+import base64
+import secrets
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,13 +23,14 @@ import requests
 
 from app.ai_adapters import extract_completion_preview, request_ai_completion, validate_provider_model
 from app.ai_polish import apply_ai_polish_to_markdown
+from app.auth import decrypt_secret, encrypt_secret, hash_password, verify_password
 from app.content_sources import detect_source_type, extract_candidate_urls, fetch_article_from_url
-from app.config import get_settings, update_feishu_webhook_state, update_telegram_webhook_state
+from app.config import get_settings, update_feishu_webhook_state, update_password, update_telegram_webhook_state
 from app.core.pipeline import run_article_pipeline, sanitize_filename
 from app.source_cache import build_source_cache_key
 from app.sync_db import SyncStore
 from app.task_history import TaskHistoryStore
-from app.wechat_sync import WechatMPClient, parse_sync_range
+from app.wechat_sync import USER_AGENT, WechatMPClient, parse_sync_range
 
 
 URL_PATTERN = re.compile(r"https?://mp\.weixin\.qq\.com/s(?:[/?][^\s)>]+)?", re.IGNORECASE)
@@ -78,10 +82,6 @@ def get_task_history_store() -> TaskHistoryStore:
         return store
 
 
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
 def get_sync_store_path() -> Path:
     settings = get_settings()
     return (settings.runtime_config_path.parent / "wechat-md-v5.sqlite3").resolve()
@@ -97,6 +97,253 @@ def get_sync_store() -> SyncStore:
             store.initialize()
             _sync_store_cache[cache_key] = store
         return store
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def ensure_admin_user_bootstrap() -> dict[str, Any]:
+    settings = get_settings()
+    store = get_sync_store()
+    existing = store.get_user_by_username(settings.username)
+    if existing is not None:
+        updates: dict[str, Any] = {}
+        if str(existing.get("password_hash") or "") != str(settings.password_hash or ""):
+            updates["password_hash"] = settings.password_hash
+        if str(existing.get("role") or "") != "admin":
+            updates["role"] = "admin"
+        if str(existing.get("status") or "") != "active":
+            updates["status"] = "active"
+        if updates:
+            updated = store.update_user(str(existing.get("id") or ""), **updates)
+            return updated or existing
+        return existing
+    return store.create_or_update_user(
+        username=settings.username,
+        password_hash=settings.password_hash,
+        display_name=settings.username,
+        role="admin",
+        status="active",
+        note="Migrated from runtime config",
+    )
+
+
+def authenticate_db_user(username: str, password: str) -> dict[str, Any] | None:
+    ensure_admin_user_bootstrap()
+    user = get_sync_store().get_user_by_username(str(username or "").strip())
+    if user is None or str(user.get("status") or "active") != "active":
+        return None
+    if not verify_password(password, str(user.get("password_hash") or "")):
+        return None
+    get_sync_store().update_user(str(user.get("id") or ""), last_login_at=_utc_now())
+    return get_sync_store().get_user_by_id(str(user.get("id") or ""))
+
+
+def get_db_user(username: str) -> dict[str, Any] | None:
+    ensure_admin_user_bootstrap()
+    return get_sync_store().get_user_by_username(str(username or "").strip())
+
+
+def list_admin_users() -> dict[str, Any]:
+    ensure_admin_user_bootstrap()
+    items = []
+    for item in get_sync_store().list_users():
+        items.append(
+            {
+                "id": str(item.get("id") or ""),
+                "username": str(item.get("username") or ""),
+                "display_name": str(item.get("display_name") or ""),
+                "role": str(item.get("role") or "operator"),
+                "status": str(item.get("status") or "active"),
+                "note": str(item.get("note") or ""),
+                "last_login_at": str(item.get("last_login_at") or ""),
+                "created_at": str(item.get("created_at") or ""),
+                "updated_at": str(item.get("updated_at") or ""),
+            }
+        )
+    return {"items": items}
+
+
+def create_admin_user(payload: dict[str, Any], *, actor_user_id: str = "", ip_address: str = "") -> dict[str, Any]:
+    username = str(payload.get("username") or "").strip()
+    password = str(payload.get("password") or "")
+    if not username:
+        raise ValueError("username 不能为空")
+    if not password:
+        raise ValueError("password 不能为空")
+    if get_sync_store().get_user_by_username(username) is not None:
+        raise ValueError("username 已存在")
+    user = get_sync_store().create_or_update_user(
+        username=username,
+        password_hash=hash_password(password),
+        display_name=str(payload.get("display_name") or username).strip(),
+        role=str(payload.get("role") or "operator").strip() or "operator",
+        status=str(payload.get("status") or "active").strip() or "active",
+        note=str(payload.get("note") or "").strip(),
+    )
+    get_sync_store().create_audit_log(
+        actor_user_id=actor_user_id,
+        action="user.create",
+        target_type="user",
+        target_id=str(user.get("id") or ""),
+        detail={"username": username, "role": user.get("role"), "status": user.get("status")},
+        ip_address=ip_address,
+    )
+    return {"user": user}
+
+
+def update_admin_user(user_id: str, payload: dict[str, Any], *, actor_user_id: str = "", ip_address: str = "") -> dict[str, Any]:
+    fields: dict[str, Any] = {}
+    for key in ("display_name", "role", "status", "note"):
+        if key in payload and payload.get(key) is not None:
+            fields[key] = str(payload.get(key) or "").strip()
+    user = get_sync_store().update_user(str(user_id or "").strip(), **fields)
+    if user is None:
+        raise KeyError("用户不存在")
+    get_sync_store().create_audit_log(
+        actor_user_id=actor_user_id,
+        action="user.update",
+        target_type="user",
+        target_id=str(user.get("id") or ""),
+        detail=fields,
+        ip_address=ip_address,
+    )
+    return {"user": user}
+
+
+def reset_admin_user_password(user_id: str, new_password: str, *, actor_user_id: str = "", ip_address: str = "") -> dict[str, Any]:
+    normalized = str(new_password or "")
+    if not normalized:
+        raise ValueError("new_password 不能为空")
+    user = get_sync_store().update_user(str(user_id or "").strip(), password_hash=hash_password(normalized))
+    if user is None:
+        raise KeyError("用户不存在")
+    get_sync_store().create_audit_log(
+        actor_user_id=actor_user_id,
+        action="user.reset_password",
+        target_type="user",
+        target_id=str(user.get("id") or ""),
+        detail={},
+        ip_address=ip_address,
+    )
+    return {"user": user}
+
+
+def change_db_user_password(username: str, current_password: str, new_password: str, *, actor_user_id: str = "", ip_address: str = "") -> dict[str, Any]:
+    normalized_username = str(username or "").strip()
+    if not normalized_username:
+        raise ValueError("用户名不能为空")
+    user = get_sync_store().get_user_by_username(normalized_username)
+    if user is None:
+        raise KeyError("用户不存在")
+    if not verify_password(str(current_password or ""), str(user.get("password_hash") or "")):
+        raise ValueError("当前密码不正确")
+    normalized_password = str(new_password or "")
+    if len(normalized_password) < 8:
+        raise ValueError("新密码至少需要 8 个字符")
+    updated = get_sync_store().update_user(str(user.get("id") or ""), password_hash=hash_password(normalized_password))
+    if updated is None:
+        raise RuntimeError("密码更新失败")
+    settings = get_settings()
+    if normalized_username == str(settings.username or ""):
+        update_password(str(current_password or ""), normalized_password)
+    get_sync_store().create_audit_log(
+        actor_user_id=actor_user_id or str(updated.get("id") or ""),
+        action="user.change_password",
+        target_type="user",
+        target_id=str(updated.get("id") or ""),
+        detail={},
+        ip_address=ip_address,
+    )
+    return {"user": updated}
+
+
+def get_wechat_mp_credentials() -> dict[str, str]:
+    stored = get_sync_store().get_wechat_mp_credentials()
+    if stored:
+        return {
+            "token": decrypt_secret(str(stored.get("token_encrypted") or "")),
+            "cookie": decrypt_secret(str(stored.get("cookie_encrypted") or "")),
+        }
+    settings = get_settings()
+    return {
+        "token": str(settings.wechat_mp_token or ""),
+        "cookie": str(settings.wechat_mp_cookie or ""),
+    }
+
+
+def save_wechat_mp_credentials(token: str, cookie: str) -> dict[str, Any]:
+    payload = get_sync_store().save_wechat_mp_credentials(
+        token_encrypted=encrypt_secret(str(token or "").strip()),
+        cookie_encrypted=encrypt_secret(str(cookie or "").strip()),
+    )
+    return {"configured": True, "updated_at": str(payload.get("updated_at") or "")}
+
+
+def get_scheduler_settings() -> dict[str, Any]:
+    configs = get_sync_store().get_scheduler_configs()
+    return {
+        "source_sync_schedule": {
+            **configs["source_sync_schedule"],
+            "enabled": bool(configs["source_sync_schedule"].get("enabled")),
+            "recent_runs": get_sync_store().list_scheduler_runs("source_sync_schedule"),
+        },
+        "article_ingest_schedule": {
+            **configs["article_ingest_schedule"],
+            "enabled": bool(configs["article_ingest_schedule"].get("enabled")),
+            "recent_runs": get_sync_store().list_scheduler_runs("article_ingest_schedule"),
+        },
+    }
+
+
+def update_scheduler_settings(payload: dict[str, Any], *, actor_user_id: str = "", ip_address: str = "") -> dict[str, Any]:
+    for key in ("source_sync_schedule", "article_ingest_schedule"):
+        if key in payload and isinstance(payload.get(key), dict):
+            get_sync_store().upsert_scheduler_config(key, dict(payload.get(key) or {}))
+    get_sync_store().create_audit_log(
+        actor_user_id=actor_user_id,
+        action="scheduler.update",
+        target_type="scheduler",
+        target_id="global",
+        detail={
+            "source_sync_schedule": payload.get("source_sync_schedule"),
+            "article_ingest_schedule": payload.get("article_ingest_schedule"),
+        },
+        ip_address=ip_address,
+    )
+    return get_scheduler_settings()
+
+
+def resolve_article_ids_from_selection(selection: dict[str, Any]) -> list[str]:
+    mode = str(selection.get("mode") or "ids").strip()
+    if mode == "filtered":
+        filters = dict(selection.get("filters") or {})
+        return get_sync_store().find_article_ids(
+            account_fakeid=str(filters.get("account_fakeid") or "").strip() or None,
+            process_status=str(filters.get("process_status") or "").strip() or None,
+            is_ingested=filters.get("is_ingested"),
+            has_execution=filters.get("has_execution"),
+            sync_run_id=str(filters.get("sync_run_id") or "").strip() or None,
+            source_id=str(filters.get("source_id") or "").strip() or None,
+            published_from=filters.get("published_from"),
+            published_to=filters.get("published_to"),
+        )
+    return [str(item).strip() for item in selection.get("article_ids") or [] if str(item).strip()]
+
+
+def delete_sync_articles(*, selection: dict[str, Any], actor_user_id: str = "", ip_address: str = "") -> dict[str, Any]:
+    article_ids = resolve_article_ids_from_selection(selection)
+    deleted = get_sync_store().delete_articles(article_ids)
+    get_sync_store().create_audit_log(
+        actor_user_id=actor_user_id,
+        action="articles.delete",
+        target_type="article",
+        target_id="bulk",
+        detail={"selection": selection, "deleted_count": deleted},
+        ip_address=ip_address,
+    )
+    return {"deleted_count": deleted, "article_ids": article_ids}
 
 
 def _isolated_echo_worker(*, value: str) -> dict[str, Any]:
@@ -789,30 +1036,150 @@ def parse_links(urls: list[str] | None = None, urls_text: str | None = None, fil
 
 
 def build_sync_config_payload() -> dict[str, Any]:
-    settings = get_settings()
+    credentials = get_wechat_mp_credentials()
     return {
-        "wechat_mp_configured": settings.wechat_mp_configured,
-        "wechat_mp_token_configured": bool(settings.wechat_mp_token),
-        "wechat_mp_token_masked": "*" * 8 if settings.wechat_mp_token else "",
-        "wechat_mp_cookie_configured": bool(settings.wechat_mp_cookie),
-        "wechat_mp_cookie_masked": _mask_cookie(settings.wechat_mp_cookie),
+        "wechat_mp_configured": bool(credentials["token"] and credentials["cookie"]),
+        "wechat_mp_token_configured": bool(credentials["token"]),
+        "wechat_mp_token_masked": "*" * 8 if credentials["token"] else "",
+        "wechat_mp_cookie_configured": bool(credentials["cookie"]),
+        "wechat_mp_cookie_masked": _mask_cookie(credentials["cookie"]),
+    }
+
+
+def _extract_cookie_value(set_cookie_header: str, name: str) -> str:
+    for part in (set_cookie_header or "").split(","):
+        trimmed = part.strip()
+        if trimmed.startswith(f"{name}="):
+            return trimmed.split(";", 1)[0]
+    return ""
+
+
+def start_wechat_mp_qr_login(http_session=None) -> dict[str, Any]:
+    session = http_session or requests.Session()
+    response = session.get(
+        "https://mp.weixin.qq.com/cgi-bin/scanloginqrcode",
+        params={"action": "getqrcode", "random": int(time.time() * 1000)},
+        timeout=max(get_settings().default_timeout, 20),
+    )
+    response.raise_for_status()
+    uuid_cookie = _extract_cookie_value(response.headers.get("set-cookie", ""), "uuid")
+    if not uuid_cookie:
+        raise RuntimeError("未能从扫码响应中获取 uuid cookie")
+    image_b64 = base64.b64encode(response.content).decode("ascii") if response.content else ""
+    record = get_sync_store().create_wechat_mp_qr_session(
+        qrcode_url=f"data:image/jpeg;base64,{image_b64}" if image_b64 else "",
+        uuid_cookie=uuid_cookie,
+        qrcode_bytes_b64=image_b64,
+    )
+    return {
+        "session_id": str(record.get("id") or ""),
+        "status": "pending",
+        "qrcode_url": str(record.get("qrcode_url") or ""),
+        "expires_in": 300,
+    }
+
+
+def get_wechat_mp_qr_login_status(session_id: str, http_session=None) -> dict[str, Any]:
+    record = get_sync_store().get_wechat_mp_qr_session(session_id)
+    if record is None:
+        raise KeyError("扫码会话不存在")
+    session = http_session or requests.Session()
+    response = session.get(
+        "https://mp.weixin.qq.com/cgi-bin/scanloginqrcode",
+        params={"action": "ask", "token": "", "lang": "zh_CN", "f": "json", "ajax": 1},
+        headers={"Cookie": str(record.get("uuid_cookie") or ""), "User-Agent": USER_AGENT},
+        timeout=max(get_settings().default_timeout, 20),
+    )
+    response.raise_for_status()
+    payload = response.json()
+    status = "pending"
+    if int(payload.get("status", 0) or 0) == 1:
+        status = "scanned"
+    elif int(payload.get("status", 0) or 0) == 4:
+        status = "confirmed"
+    elif int(payload.get("status", 0) or 0) == 0:
+        status = "pending"
+    updated = get_sync_store().update_wechat_mp_qr_session(session_id, status=status)
+    return {
+        "session_id": session_id,
+        "status": str(updated.get("status") or status) if updated else status,
+        "message": str(payload.get("msg") or ""),
+    }
+
+
+def confirm_wechat_mp_qr_login(session_id: str, http_session=None) -> dict[str, Any]:
+    record = get_sync_store().get_wechat_mp_qr_session(session_id)
+    if record is None:
+        raise KeyError("扫码会话不存在")
+    session = http_session or requests.Session()
+    response = session.post(
+        "https://mp.weixin.qq.com/cgi-bin/bizlogin",
+        params={"action": "login"},
+        headers={"Cookie": str(record.get("uuid_cookie") or ""), "User-Agent": USER_AGENT},
+        data={
+            "userlang": "zh_CN",
+            "redirect_url": "",
+            "cookie_forbidden": 0,
+            "cookie_cleaned": 0,
+            "plugin_used": 0,
+            "login_type": 3,
+            "token": "",
+            "lang": "zh_CN",
+            "f": "json",
+            "ajax": 1,
+        },
+        timeout=max(get_settings().default_timeout, 20),
+    )
+    response.raise_for_status()
+    payload = response.json()
+    redirect_url = str(payload.get("redirect_url") or payload.get("redirect_url_ext") or "")
+    token = ""
+    if redirect_url:
+        token = requests.utils.urlparse(redirect_url).query
+        token = next((part.split("=", 1)[1] for part in token.split("&") if part.startswith("token=")), "")
+    if not token:
+        raise RuntimeError("扫码登录成功响应中缺少 token")
+    raw_cookie = "; ".join(
+        [
+            part.split(";", 1)[0]
+            for part in response.headers.get("set-cookie", "").split(",")
+            if "=" in part
+        ]
+    ).strip()
+    if not raw_cookie:
+        raise RuntimeError("扫码登录成功响应中缺少 cookie")
+    save_wechat_mp_credentials(token, raw_cookie)
+    updated = get_sync_store().update_wechat_mp_qr_session(
+        session_id,
+        status="confirmed",
+        token=token,
+        cookie=raw_cookie,
+    )
+    return {
+        "session_id": session_id,
+        "status": "confirmed",
+        "token": token,
+        "cookie": raw_cookie,
+        "message": "登录成功",
+        "qrcode_url": str(updated.get("qrcode_url") or "") if updated else "",
     }
 
 
 def check_wechat_mp_login_status(http_session=None) -> dict[str, Any]:
-    settings = get_settings()
-    if not settings.wechat_mp_configured:
+    credentials = get_wechat_mp_credentials()
+    if not (credentials["token"] and credentials["cookie"]):
         return {
             "configured": False,
             "valid": False,
             "message": "公众号后台 token / cookie 未配置",
         }
-    client = WechatMPClient(http_session=http_session)
+    client = WechatMPClient(token=credentials["token"], cookie=credentials["cookie"], http_session=http_session)
     return client.check_login_status()
 
 
 def search_wechat_accounts(keyword: str, *, begin: int = 0, size: int = 5, http_session=None) -> dict[str, Any]:
-    client = WechatMPClient(http_session=http_session)
+    credentials = get_wechat_mp_credentials()
+    client = WechatMPClient(token=credentials["token"], cookie=credentials["cookie"], http_session=http_session)
     return client.search_accounts(keyword=keyword, begin=begin, size=size)
 
 
@@ -877,7 +1244,8 @@ def sync_source_articles(
         range_start=sync_range.start_date,
         range_end=sync_range.end_date,
     )
-    client = WechatMPClient(http_session=http_session)
+    credentials = get_wechat_mp_credentials()
+    client = WechatMPClient(token=credentials["token"], cookie=credentials["cookie"], http_session=http_session)
     fetched_count = 0
     new_count = 0
     updated_count = 0
@@ -1036,7 +1404,9 @@ def _run_ingest_job(job_id: str, article_ids: list[str], ai_enabled: bool, outpu
     success_count = 0
     failure_count = 0
     last_error = ""
-    for article_id in article_ids:
+    for index, article_id in enumerate(article_ids):
+        if index > 0:
+            time.sleep(random.uniform(5.0, 12.0))
         article = store.get_article_by_id(article_id)
         if article is None:
             completed += 1
@@ -1825,6 +2195,6 @@ def _copy_job(job: dict[str, Any]) -> dict[str, Any]:
 job_store = JobStore()
 _telegram_executor = ThreadPoolExecutor(max_workers=2)
 _feishu_executor = ThreadPoolExecutor(max_workers=2)
-_rerun_executor = ThreadPoolExecutor(max_workers=2)
-_ingest_executor = ThreadPoolExecutor(max_workers=2)
+_rerun_executor = ThreadPoolExecutor(max_workers=1)
+_ingest_executor = ThreadPoolExecutor(max_workers=1)
 _feishu_token_cache: dict[str, dict[str, Any]] = {}

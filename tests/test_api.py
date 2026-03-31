@@ -1938,10 +1938,8 @@ class ApiTests(unittest.TestCase):
 
         reset_admin_credentials(new_password="offline-secret")
 
-        response = self.client.get(
-            "/api/config",
-            cookies={"wechat_md_session": cookie_value},
-        )
+        self.client.cookies.set("wechat_md_session", cookie_value)
+        response = self.client.get("/api/config")
 
         self.assertEqual(response.status_code, 401)
         self.assertEqual(self._login(password="offline-secret").status_code, 200)

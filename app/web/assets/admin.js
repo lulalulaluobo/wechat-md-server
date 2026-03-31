@@ -64,6 +64,25 @@
     if (el) el.textContent = text;
   }
 
+  function getCookie(name) {
+    const prefix = `${name}=`;
+    const parts = document.cookie.split(";").map((item) => item.trim());
+    const match = parts.find((item) => item.startsWith(prefix));
+    return match ? decodeURIComponent(match.slice(prefix.length)) : "";
+  }
+
+  function getCsrfToken() {
+    return getCookie("wechat_md_csrf");
+  }
+
+  function buildJsonHeaders(extraHeaders) {
+    return {
+      "Content-Type": "application/json",
+      "X-CSRF-Token": getCsrfToken(),
+      ...(extraHeaders || {}),
+    };
+  }
+
   /* ── Advanced Toggle ── */
   function initAdvancedToggles() {
     document.querySelectorAll("[data-toggle-advanced]").forEach((btn) => {
@@ -104,6 +123,9 @@
     resultHtml,
     setHtml,
     setText,
+    getCookie,
+    getCsrfToken,
+    buildJsonHeaders,
     initAdvancedToggles,
     initTabs,
   };

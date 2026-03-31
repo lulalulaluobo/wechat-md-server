@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import secrets
 import threading
 import time
 from pathlib import Path
@@ -27,33 +28,48 @@ from app.config import (
     update_telegram_webhook_state,
 )
 from app.services import (
+    authenticate_db_user,
     build_sync_config_payload,
     build_config_payload,
     build_output_target,
     check_fns_status,
     check_wechat_mp_login_status,
+    change_db_user_password,
+    confirm_wechat_mp_qr_login,
     configure_feishu_webhook_state,
     configure_telegram_webhook,
+    create_admin_user,
     create_sync_source,
+    delete_sync_articles,
     delete_sync_source,
+    ensure_admin_user_bootstrap,
     execute_single_conversion,
     extract_feishu_message_text,
     extract_single_wechat_url,
+    get_db_user,
+    get_scheduler_settings,
+    get_wechat_mp_credentials,
+    get_wechat_mp_qr_login_status,
     ensure_runtime_environment,
     get_ingest_job,
     get_internal_workdir_root,
     get_task,
     job_store,
     list_article_execution_history,
+    list_admin_users,
     list_tasks,
     list_sync_articles,
     list_sync_sources_payload,
     normalize_output_dir,
     parse_links,
     read_uploaded_text,
+    reset_admin_user_password,
     search_wechat_accounts,
     send_feishu_message,
     send_telegram_message,
+    save_wechat_mp_credentials,
+    resolve_article_ids_from_selection,
+    start_wechat_mp_qr_login,
     submit_article_ingest,
     submit_feishu_convert_task,
     submit_rerun_task,
@@ -62,8 +78,11 @@ from app.services import (
     sync_source_articles,
     test_ai_connectivity,
     TELEGRAM_SECRET_HEADER,
+    update_admin_user,
+    update_scheduler_settings,
 )
 router = APIRouter()
+CSRF_COOKIE_NAME = "wechat_md_csrf"
 _BOT_EVENT_TTL_SECONDS = 10 * 60
 _bot_event_cache: dict[str, float] = {}
 _bot_event_lock = threading.Lock()
@@ -254,6 +273,7 @@ async def create_session(request: Request, response: Response) -> dict[str, Any]
     payload = await _read_convert_payload(request)
     username = str(payload.get("username") or "").strip()
     password = str(payload.get("password") or "")
+    ensure_admin_user_bootstrap()
     settings = get_settings()
     client_host = request.client.host if request.client else "unknown"
     throttle_key = f"{client_host}:{username}"
@@ -266,7 +286,8 @@ async def create_session(request: Request, response: Response) -> dict[str, Any]
             headers={"Retry-After": str(retry_after or 60)},
         )
 
-    if username != settings.username or not verify_password(password, settings.password_hash):
+    user = authenticate_db_user(username, password)
+    if user is None:
         still_allowed, retry_after = record_login_failure(throttle_key)
         if not still_allowed:
             raise HTTPException(
@@ -277,30 +298,141 @@ async def create_session(request: Request, response: Response) -> dict[str, Any]
         raise HTTPException(status_code=401, detail="用户名或密码错误")
 
     clear_login_failures(throttle_key)
+    csrf_token = secrets.token_urlsafe(24)
 
     response.set_cookie(
         SESSION_COOKIE_NAME,
-        build_session_token(settings.username, settings.password_hash, settings.session_secret),
+        build_session_token(str(user.get("username") or ""), str(user.get("password_hash") or ""), settings.session_secret),
         httponly=True,
         samesite="strict",
         secure=session_cookie_secure_enabled(),
         max_age=7 * 24 * 60 * 60,
     )
-    return {"status": "ok", "auth_enabled": True, "username": settings.username}
+    response.set_cookie(
+        CSRF_COOKIE_NAME,
+        csrf_token,
+        httponly=False,
+        samesite="strict",
+        secure=session_cookie_secure_enabled(),
+        max_age=7 * 24 * 60 * 60,
+    )
+    return {
+        "status": "ok",
+        "auth_enabled": True,
+        "username": str(user.get("username") or ""),
+        "role": str(user.get("role") or "operator"),
+        "csrf_token": csrf_token,
+    }
 
 
 @router.delete("/api/session")
 async def delete_session(response: Response) -> dict[str, Any]:
     response.delete_cookie(SESSION_COOKIE_NAME, samesite="strict", secure=session_cookie_secure_enabled())
+    response.delete_cookie(CSRF_COOKIE_NAME, samesite="strict", secure=session_cookie_secure_enabled())
     return {"status": "ok"}
+
+
+@router.get("/api/admin/users")
+async def get_admin_users(
+    session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
+) -> dict[str, Any]:
+    _require_admin(session_cookie)
+    return list_admin_users()
+
+
+@router.post("/api/admin/users")
+async def post_admin_user(
+    request: Request,
+    session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
+) -> dict[str, Any]:
+    actor = _require_admin(session_cookie)
+    _require_csrf(request, strict=True)
+    payload = await _read_convert_payload(request)
+    try:
+        return create_admin_user(
+            payload,
+            actor_user_id=str(actor.get("id") or ""),
+            ip_address=request.client.host if request.client else "",
+        )
+    except Exception as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.put("/api/admin/users/{user_id}")
+async def put_admin_user(
+    user_id: str,
+    request: Request,
+    session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
+) -> dict[str, Any]:
+    actor = _require_admin(session_cookie)
+    _require_csrf(request, strict=True)
+    payload = await _read_convert_payload(request)
+    try:
+        return update_admin_user(
+            user_id,
+            payload,
+            actor_user_id=str(actor.get("id") or ""),
+            ip_address=request.client.host if request.client else "",
+        )
+    except Exception as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.post("/api/admin/users/{user_id}/password")
+async def post_admin_user_password(
+    user_id: str,
+    request: Request,
+    session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
+) -> dict[str, Any]:
+    actor = _require_admin(session_cookie)
+    _require_csrf(request, strict=True)
+    payload = await _read_convert_payload(request)
+    try:
+        return reset_admin_user_password(
+            user_id,
+            str(payload.get("new_password") or ""),
+            actor_user_id=str(actor.get("id") or ""),
+            ip_address=request.client.host if request.client else "",
+        )
+    except Exception as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.get("/api/admin/schedules")
+async def get_admin_schedules(
+    session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
+) -> dict[str, Any]:
+    _require_admin(session_cookie)
+    return get_scheduler_settings()
+
+
+@router.put("/api/admin/schedules")
+async def put_admin_schedules(
+    request: Request,
+    session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
+) -> dict[str, Any]:
+    actor = _require_admin(session_cookie)
+    _require_csrf(request, strict=True)
+    payload = await _read_convert_payload(request)
+    return update_scheduler_settings(
+        payload,
+        actor_user_id=str(actor.get("id") or ""),
+        ip_address=request.client.host if request.client else "",
+    )
 
 
 @router.get("/api/admin/settings")
 async def get_admin_settings(
     session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
 ) -> dict[str, Any]:
-    _require_access(session_cookie)
-    return build_admin_settings_payload()
+    user = _require_access(session_cookie)
+    payload = build_admin_settings_payload()
+    payload["current_user"] = {
+        "id": str(user.get("id") or ""),
+        "username": str(user.get("username") or ""),
+        "role": str(user.get("role") or "operator"),
+    }
+    return payload
 
 
 @router.get("/api/admin/fns-status")
@@ -356,6 +488,7 @@ async def update_admin_ai_selection(
     session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
 ) -> dict[str, Any]:
     _require_access(session_cookie)
+    _require_csrf(request)
     payload = await _read_convert_payload(request)
     try:
         update_ai_selected_model(str(payload.get("ai_selected_model_id") or ""))
@@ -370,6 +503,7 @@ async def update_admin_settings(
     session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
 ) -> dict[str, Any]:
     _require_access(session_cookie)
+    _require_csrf(request)
     payload = await _read_convert_payload(request)
     clear_fields = payload.get("clear_fields")
     if not isinstance(clear_fields, list):
@@ -407,22 +541,31 @@ async def update_admin_password(
     response: Response,
     session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
 ) -> dict[str, Any]:
-    _require_access(session_cookie)
+    user = _require_access(session_cookie)
+    _require_csrf(request)
     payload = await _read_convert_payload(request)
     current_password = str(payload.get("current_password") or "")
     new_password = str(payload.get("new_password") or "")
     try:
-        updated = update_password(current_password=current_password, new_password=new_password)
+        updated = change_db_user_password(
+            str(user.get("username") or ""),
+            current_password,
+            new_password,
+            actor_user_id=str(user.get("id") or ""),
+            ip_address=request.client.host if request.client else "",
+        )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
 
-    auth_user = updated["auth"]["user"]
-    session_secret = str(updated["auth"]["session_secret"])
+    auth_user = updated["user"]
+    session_secret = str(get_settings().session_secret)
     response.set_cookie(
         SESSION_COOKIE_NAME,
         build_session_token(
-            str(auth_user["username"]),
-            str(auth_user["password_hash"]),
+            str(auth_user.get("username") or ""),
+            str(auth_user.get("password_hash") or ""),
             session_secret,
         ),
         httponly=True,
@@ -447,11 +590,25 @@ async def update_sync_config(
     session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
 ) -> dict[str, Any]:
     _require_access(session_cookie)
+    _require_csrf(request)
     payload = await _read_convert_payload(request)
     clear_fields = payload.get("clear_fields")
     if not isinstance(clear_fields, list):
         clear_fields = []
     try:
+        db_token = payload.get("wechat_mp_token")
+        db_cookie = payload.get("wechat_mp_cookie")
+        if db_token is not None or db_cookie is not None or "wechat_mp_token" in clear_fields or "wechat_mp_cookie" in clear_fields:
+            current = get_wechat_mp_credentials()
+            token = str(db_token or "") if db_token is not None else str(current.get("token") or "")
+            cookie = str(db_cookie or "") if db_cookie is not None else str(current.get("cookie") or "")
+            if "wechat_mp_token" in clear_fields:
+                token = ""
+            if "wechat_mp_cookie" in clear_fields:
+                cookie = ""
+            save_wechat_mp_credentials(token, cookie)
+            payload = {key: value for key, value in payload.items() if key not in {"wechat_mp_token", "wechat_mp_cookie"}}
+            clear_fields = [item for item in clear_fields if item not in {"wechat_mp_token", "wechat_mp_cookie"}]
         save_runtime_config(payload, clear_fields=clear_fields)
     except Exception as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
@@ -497,6 +654,7 @@ async def post_sync_source(
     session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
 ) -> dict[str, Any]:
     _require_access(session_cookie)
+    _require_csrf(request)
     payload = await _read_convert_payload(request)
     try:
         return create_sync_source(payload)
@@ -507,9 +665,11 @@ async def post_sync_source(
 @router.delete("/api/sync/sources/{source_id}")
 async def delete_sync_source_route(
     source_id: str,
+    request: Request,
     session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
 ) -> dict[str, Any]:
     _require_access(session_cookie)
+    _require_csrf(request)
     delete_sync_source(source_id)
     return {"status": "success"}
 
@@ -521,14 +681,13 @@ async def post_sync_source_run(
     session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
 ) -> dict[str, Any]:
     _require_access(session_cookie)
+    _require_csrf(request)
     payload = await _read_convert_payload(request)
     try:
         return sync_source_articles(
             source_id=source_id,
             start_date=str(payload.get("start_date") or "").strip() or None,
             end_date=str(payload.get("end_date") or "").strip() or None,
-            queue_for_ingest=_parse_bool(payload.get("queue_for_ingest")),
-            ai_enabled=_parse_bool(payload.get("ai_enabled")),
             output_target=str(payload.get("output_target") or build_output_target(None)).strip(),
             skip_ingested=_parse_bool(payload.get("skip_ingested")) if payload.get("skip_ingested") is not None else True,
         )
@@ -565,6 +724,22 @@ async def get_sync_articles(
     )
 
 
+@router.post("/api/sync/articles/delete")
+async def post_sync_articles_delete(
+    request: Request,
+    session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
+) -> dict[str, Any]:
+    actor = _require_access(session_cookie)
+    _require_csrf(request, strict=True)
+    payload = await _read_convert_payload(request)
+    selection = payload.get("selection") if isinstance(payload.get("selection"), dict) else {}
+    return delete_sync_articles(
+        selection=selection,
+        actor_user_id=str(actor.get("id") or ""),
+        ip_address=request.client.host if request.client else "",
+    )
+
+
 @router.get("/api/sync/articles/{article_id}/executions")
 async def get_sync_article_executions(
     article_id: str,
@@ -582,19 +757,68 @@ async def post_sync_articles_ingest(
     session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
 ) -> dict[str, Any]:
     _require_access(session_cookie)
+    _require_csrf(request)
     payload = await _read_convert_payload(request)
-    article_ids = payload.get("article_ids")
-    if not isinstance(article_ids, list) or not article_ids:
+    selection = payload.get("selection") if isinstance(payload.get("selection"), dict) else None
+    if selection is None:
+        article_ids = payload.get("article_ids")
+        selection = {"mode": "ids", "article_ids": article_ids if isinstance(article_ids, list) else []}
+    article_ids = resolve_article_ids_from_selection(selection)
+    if not article_ids:
         raise HTTPException(status_code=400, detail="article_ids 不能为空")
     try:
         return submit_article_ingest(
-            article_ids=[str(item) for item in article_ids],
-            ai_enabled=_parse_bool(payload.get("ai_enabled")),
+            article_ids=article_ids,
+            ai_enabled=bool(get_settings().ai_enabled),
             output_target=str(payload.get("output_target") or build_output_target(None)).strip(),
             skip_ingested=_parse_bool(payload.get("skip_ingested")) if payload.get("skip_ingested") is not None else True,
         )
     except Exception as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.post("/api/sync/login/qr/start")
+async def post_sync_qr_start(
+    request: Request,
+    session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
+) -> dict[str, Any]:
+    _require_access(session_cookie)
+    _require_csrf(request, strict=True)
+    try:
+        return start_wechat_mp_qr_login()
+    except Exception as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.get("/api/sync/login/qr/{session_id}")
+async def get_sync_qr_status(
+    session_id: str,
+    session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
+) -> dict[str, Any]:
+    _require_access(session_cookie)
+    try:
+        return get_wechat_mp_qr_login_status(session_id)
+    except Exception as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.post("/api/sync/login/qr/{session_id}/confirm")
+async def post_sync_qr_confirm(
+    session_id: str,
+    request: Request,
+    session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
+) -> dict[str, Any]:
+    _require_access(session_cookie)
+    _require_csrf(request, strict=True)
+    try:
+        payload = confirm_wechat_mp_qr_login(session_id)
+    except Exception as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    token = str(payload.get("token") or "").strip()
+    cookie = str(payload.get("cookie") or "").strip()
+    if token and cookie:
+        save_wechat_mp_credentials(token, cookie)
+    return payload
 
 
 @router.get("/api/sync/ingest-jobs/{job_id}")
@@ -746,16 +970,58 @@ async def _read_batch_payload(request: Request, file: UploadFile | None) -> dict
     return payload
 
 
-def _require_access(session_cookie: str | None) -> None:
-    settings = get_settings()
-    if verify_session_token(session_cookie, settings.username, settings.password_hash, settings.session_secret):
-        return
+def _require_access(session_cookie: str | None) -> dict[str, Any]:
+    user = get_authenticated_user(session_cookie)
+    if user is not None:
+        return user
     raise HTTPException(status_code=401, detail="未授权访问")
 
 
 def is_authenticated(session_cookie: str | None) -> bool:
+    return get_authenticated_user(session_cookie) is not None
+
+
+def get_authenticated_user(session_cookie: str | None) -> dict[str, Any] | None:
+    ensure_admin_user_bootstrap()
+    if not session_cookie:
+        return None
+    try:
+        username, _ = str(session_cookie).split(":", 1)
+    except ValueError:
+        return None
     settings = get_settings()
-    return verify_session_token(session_cookie, settings.username, settings.password_hash, settings.session_secret)
+    user = get_db_user(username)
+    if user is None or str(user.get("status") or "active") != "active":
+        return None
+    if not verify_session_token(session_cookie, str(user.get("username") or ""), str(user.get("password_hash") or ""), settings.session_secret):
+        return None
+    return user
+
+
+def _require_admin(session_cookie: str | None) -> dict[str, Any]:
+    user = get_authenticated_user(session_cookie)
+    if user is None:
+        raise HTTPException(status_code=401, detail="未授权访问")
+    if str(user.get("role") or "operator") != "admin":
+        raise HTTPException(status_code=403, detail="需要管理员权限")
+    return user
+
+
+def _require_csrf(request: Request, *, strict: bool = False) -> None:
+    header_token = str(request.headers.get("X-CSRF-Token") or "").strip()
+    cookie_token = str(request.cookies.get(CSRF_COOKIE_NAME) or "").strip()
+    if header_token and cookie_token and secrets.compare_digest(header_token, cookie_token):
+        return
+    if strict:
+        raise HTTPException(status_code=403, detail="CSRF token 无效")
+    looks_like_browser = bool(
+        str(request.headers.get("origin") or "").strip()
+        or str(request.headers.get("referer") or "").strip()
+        or str(request.headers.get("sec-fetch-site") or "").strip()
+    )
+    if not looks_like_browser:
+        return
+    raise HTTPException(status_code=403, detail="CSRF token 无效")
 
 
 def _safe_send_feishu_message(open_id: str, text: str) -> None:

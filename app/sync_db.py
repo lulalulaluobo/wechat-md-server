@@ -199,6 +199,77 @@ class SyncStore:
                         ON article_executions(article_id, created_at DESC);
                     CREATE INDEX IF NOT EXISTS idx_article_executions_status
                         ON article_executions(status, source_type, trigger_channel);
+
+                    CREATE TABLE IF NOT EXISTS users (
+                        id TEXT PRIMARY KEY,
+                        username TEXT NOT NULL UNIQUE,
+                        password_hash TEXT NOT NULL,
+                        display_name TEXT NOT NULL DEFAULT '',
+                        role TEXT NOT NULL DEFAULT 'operator',
+                        status TEXT NOT NULL DEFAULT 'active',
+                        note TEXT NOT NULL DEFAULT '',
+                        last_login_at TEXT NOT NULL DEFAULT '',
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    );
+
+                    CREATE TABLE IF NOT EXISTS audit_logs (
+                        id TEXT PRIMARY KEY,
+                        actor_user_id TEXT NOT NULL DEFAULT '',
+                        action TEXT NOT NULL,
+                        target_type TEXT NOT NULL DEFAULT '',
+                        target_id TEXT NOT NULL DEFAULT '',
+                        detail_json TEXT NOT NULL DEFAULT '{}',
+                        ip_address TEXT NOT NULL DEFAULT '',
+                        created_at TEXT NOT NULL
+                    );
+
+                    CREATE TABLE IF NOT EXISTS scheduler_configs (
+                        key TEXT PRIMARY KEY,
+                        enabled INTEGER NOT NULL DEFAULT 0,
+                        frequency TEXT NOT NULL DEFAULT 'daily',
+                        day_of_week INTEGER NOT NULL DEFAULT -1,
+                        day_of_month INTEGER NOT NULL DEFAULT -1,
+                        time_of_day TEXT NOT NULL DEFAULT '09:00',
+                        timezone TEXT NOT NULL DEFAULT 'Asia/Shanghai',
+                        updated_at TEXT NOT NULL,
+                        last_run_at TEXT NOT NULL DEFAULT '',
+                        last_status TEXT NOT NULL DEFAULT '',
+                        last_error TEXT NOT NULL DEFAULT '',
+                        paused_until TEXT NOT NULL DEFAULT '',
+                        pause_reason TEXT NOT NULL DEFAULT ''
+                    );
+
+                    CREATE TABLE IF NOT EXISTS scheduler_runs (
+                        id TEXT PRIMARY KEY,
+                        scheduler_key TEXT NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'running',
+                        started_at TEXT NOT NULL,
+                        finished_at TEXT NOT NULL DEFAULT '',
+                        result_json TEXT NOT NULL DEFAULT '{}',
+                        error_message TEXT NOT NULL DEFAULT ''
+                    );
+
+                    CREATE TABLE IF NOT EXISTS wechat_mp_credentials (
+                        id TEXT PRIMARY KEY,
+                        token_encrypted TEXT NOT NULL DEFAULT '',
+                        cookie_encrypted TEXT NOT NULL DEFAULT '',
+                        updated_at TEXT NOT NULL
+                    );
+
+                    CREATE TABLE IF NOT EXISTS wechat_mp_qr_sessions (
+                        id TEXT PRIMARY KEY,
+                        status TEXT NOT NULL DEFAULT 'pending',
+                        uuid_cookie TEXT NOT NULL DEFAULT '',
+                        qrcode_url TEXT NOT NULL DEFAULT '',
+                        qrcode_bytes_b64 TEXT NOT NULL DEFAULT '',
+                        token TEXT NOT NULL DEFAULT '',
+                        cookie TEXT NOT NULL DEFAULT '',
+                        error_message TEXT NOT NULL DEFAULT '',
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        expires_at TEXT NOT NULL DEFAULT ''
+                    );
                     """
                 )
                 _ensure_column(connection, "articles", "last_sync_run_id", "TEXT NOT NULL DEFAULT ''")
@@ -886,6 +957,84 @@ class SyncStore:
             ).fetchall()
         return [_to_dict(row) or {} for row in rows]
 
+    def delete_articles(self, article_ids: list[str]) -> int:
+        self.initialize()
+        normalized_ids = [str(item).strip() for item in article_ids if str(item).strip()]
+        if not normalized_ids:
+            return 0
+        placeholders = ", ".join("?" for _ in normalized_ids)
+        with self._connect() as connection:
+            urls = [
+                str(row["article_url"] or "")
+                for row in connection.execute(
+                    f"SELECT article_url FROM articles WHERE id IN ({placeholders})",
+                    tuple(normalized_ids),
+                ).fetchall()
+            ]
+            if urls:
+                url_placeholders = ", ".join("?" for _ in urls)
+                connection.execute(
+                    f"DELETE FROM article_artifacts WHERE article_url IN ({url_placeholders})",
+                    tuple(urls),
+                )
+            connection.execute(
+                f"DELETE FROM article_executions WHERE article_id IN ({placeholders})",
+                tuple(normalized_ids),
+            )
+            cursor = connection.execute(
+                f"DELETE FROM articles WHERE id IN ({placeholders})",
+                tuple(normalized_ids),
+            )
+        return int(cursor.rowcount or 0)
+
+    def find_article_ids(
+        self,
+        *,
+        account_fakeid: str | None = None,
+        process_status: str | None = None,
+        is_ingested: bool | None = None,
+        has_execution: bool | None = None,
+        sync_run_id: str | None = None,
+        source_id: str | None = None,
+        published_from: int | None = None,
+        published_to: int | None = None,
+    ) -> list[str]:
+        self.initialize()
+        clauses = ["1=1"]
+        params: list[Any] = []
+        if account_fakeid:
+            clauses.append("account_fakeid = ?")
+            params.append(str(account_fakeid).strip())
+        if source_id:
+            clauses.append("account_fakeid = (SELECT account_fakeid FROM sync_sources WHERE id = ?)")
+            params.append(str(source_id).strip())
+        if sync_run_id:
+            clauses.append("last_sync_run_id = ?")
+            params.append(str(sync_run_id).strip())
+        if process_status:
+            clauses.append("process_status = ?")
+            params.append(str(process_status).strip())
+        if is_ingested is not None:
+            clauses.append("is_ingested = ?")
+            params.append(_normalize_bool(is_ingested))
+        if has_execution is True:
+            clauses.append("EXISTS (SELECT 1 FROM article_executions WHERE article_executions.article_id = articles.id)")
+        elif has_execution is False:
+            clauses.append("NOT EXISTS (SELECT 1 FROM article_executions WHERE article_executions.article_id = articles.id)")
+        if published_from is not None:
+            clauses.append("publish_time >= ?")
+            params.append(int(published_from))
+        if published_to is not None:
+            clauses.append("publish_time <= ?")
+            params.append(int(published_to))
+        where_sql = " AND ".join(clauses)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"SELECT id FROM articles WHERE {where_sql} ORDER BY publish_time DESC, updated_at DESC",
+                tuple(params),
+            ).fetchall()
+        return [str(row["id"]) for row in rows]
+
     def create_ingest_job(self, *, total: int, ai_enabled: bool, output_target: str, skip_ingested: bool) -> dict[str, Any]:
         self.initialize()
         now = _utc_now()
@@ -949,6 +1098,377 @@ class SyncStore:
         self.initialize()
         with self._connect() as connection:
             row = connection.execute("SELECT * FROM ingest_jobs WHERE id = ?", (str(job_id or "").strip(),)).fetchone()
+        return _to_dict(row)
+
+    def create_or_update_user(
+        self,
+        *,
+        username: str,
+        password_hash: str,
+        display_name: str,
+        role: str,
+        status: str = "active",
+        note: str = "",
+    ) -> dict[str, Any]:
+        self.initialize()
+        normalized_username = str(username or "").strip()
+        if not normalized_username:
+            raise ValueError("username 不能为空")
+        now = _utc_now()
+        payload = {
+            "id": uuid.uuid4().hex,
+            "username": normalized_username,
+            "password_hash": str(password_hash or "").strip(),
+            "display_name": str(display_name or "").strip(),
+            "role": str(role or "operator").strip() or "operator",
+            "status": str(status or "active").strip() or "active",
+            "note": str(note or "").strip(),
+            "last_login_at": "",
+            "created_at": now,
+            "updated_at": now,
+        }
+        with self._connect() as connection:
+            existing = connection.execute("SELECT * FROM users WHERE username = ?", (normalized_username,)).fetchone()
+            if existing is not None:
+                payload["id"] = existing["id"]
+                payload["created_at"] = existing["created_at"]
+                payload["last_login_at"] = str(existing["last_login_at"] or "")
+            connection.execute(
+                """
+                INSERT INTO users (
+                    id, username, password_hash, display_name, role, status, note,
+                    last_login_at, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(username) DO UPDATE SET
+                    password_hash = excluded.password_hash,
+                    display_name = excluded.display_name,
+                    role = excluded.role,
+                    status = excluded.status,
+                    note = excluded.note,
+                    updated_at = excluded.updated_at
+                """,
+                tuple(payload.values()),
+            )
+            row = connection.execute("SELECT * FROM users WHERE username = ?", (normalized_username,)).fetchone()
+        return _to_dict(row) or payload
+
+    def list_users(self) -> list[dict[str, Any]]:
+        self.initialize()
+        with self._connect() as connection:
+            rows = connection.execute("SELECT * FROM users ORDER BY created_at ASC").fetchall()
+        return [_to_dict(row) or {} for row in rows]
+
+    def get_user_by_username(self, username: str) -> dict[str, Any] | None:
+        self.initialize()
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM users WHERE username = ?", (str(username or "").strip(),)).fetchone()
+        return _to_dict(row)
+
+    def get_user_by_id(self, user_id: str) -> dict[str, Any] | None:
+        self.initialize()
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM users WHERE id = ?", (str(user_id or "").strip(),)).fetchone()
+        return _to_dict(row)
+
+    def update_user(self, user_id: str, **fields: Any) -> dict[str, Any] | None:
+        self.initialize()
+        current = self.get_user_by_id(user_id)
+        if current is None:
+            return None
+        allowed = {"display_name", "role", "status", "note", "password_hash", "last_login_at"}
+        updates = {key: fields[key] for key in fields if key in allowed}
+        if not updates:
+            return current
+        updates["updated_at"] = _utc_now()
+        columns = list(updates.keys())
+        with self._connect() as connection:
+            connection.execute(
+                f"UPDATE users SET {', '.join(f'{column} = ?' for column in columns)} WHERE id = ?",
+                tuple(updates[column] for column in columns) + (str(user_id or "").strip(),),
+            )
+            row = connection.execute("SELECT * FROM users WHERE id = ?", (str(user_id or "").strip(),)).fetchone()
+        return _to_dict(row)
+
+    def create_audit_log(
+        self,
+        *,
+        actor_user_id: str,
+        action: str,
+        target_type: str = "",
+        target_id: str = "",
+        detail: dict[str, Any] | None = None,
+        ip_address: str = "",
+    ) -> dict[str, Any]:
+        self.initialize()
+        payload = {
+            "id": uuid.uuid4().hex,
+            "actor_user_id": str(actor_user_id or "").strip(),
+            "action": str(action or "").strip(),
+            "target_type": str(target_type or "").strip(),
+            "target_id": str(target_id or "").strip(),
+            "detail_json": json.dumps(detail or {}, ensure_ascii=False),
+            "ip_address": str(ip_address or "").strip(),
+            "created_at": _utc_now(),
+        }
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO audit_logs (id, actor_user_id, action, target_type, target_id, detail_json, ip_address, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                tuple(payload.values()),
+            )
+        return payload
+
+    def get_scheduler_configs(self) -> dict[str, dict[str, Any]]:
+        self.initialize()
+        defaults = {
+            "source_sync_schedule": {
+                "key": "source_sync_schedule",
+                "enabled": False,
+                "frequency": "daily",
+                "day_of_week": -1,
+                "day_of_month": -1,
+                "time_of_day": "00:00",
+                "timezone": "Asia/Shanghai",
+                "last_run_at": "",
+                "last_status": "",
+                "last_error": "",
+                "paused_until": "",
+                "pause_reason": "",
+            },
+            "article_ingest_schedule": {
+                "key": "article_ingest_schedule",
+                "enabled": False,
+                "frequency": "daily",
+                "day_of_week": -1,
+                "day_of_month": -1,
+                "time_of_day": "00:00",
+                "timezone": "Asia/Shanghai",
+                "last_run_at": "",
+                "last_status": "",
+                "last_error": "",
+                "paused_until": "",
+                "pause_reason": "",
+            },
+        }
+        with self._connect() as connection:
+            rows = connection.execute("SELECT * FROM scheduler_configs").fetchall()
+        for row in rows:
+            payload = _to_dict(row) or {}
+            key = str(payload.get("key") or "")
+            if key in defaults:
+                payload["enabled"] = bool(payload.get("enabled"))
+                defaults[key] = payload
+        return defaults
+
+    def upsert_scheduler_config(self, key: str, payload: dict[str, Any]) -> dict[str, Any]:
+        self.initialize()
+        current = self.get_scheduler_configs().get(str(key), {})
+        normalized = {
+            **current,
+            **payload,
+            "key": str(key),
+            "enabled": _normalize_bool(payload.get("enabled", current.get("enabled", False))),
+            "frequency": str(payload.get("frequency") or current.get("frequency") or "daily"),
+            "day_of_week": int(payload.get("day_of_week", current.get("day_of_week", -1)) or -1),
+            "day_of_month": int(payload.get("day_of_month", current.get("day_of_month", -1)) or -1),
+            "time_of_day": str(payload.get("time_of_day") or current.get("time_of_day") or "09:00"),
+            "timezone": str(payload.get("timezone") or current.get("timezone") or "Asia/Shanghai"),
+            "updated_at": _utc_now(),
+            "last_run_at": str(payload.get("last_run_at") or current.get("last_run_at") or ""),
+            "last_status": str(payload.get("last_status") or current.get("last_status") or ""),
+            "last_error": str(payload.get("last_error") or current.get("last_error") or ""),
+            "paused_until": str(payload.get("paused_until") or current.get("paused_until") or ""),
+            "pause_reason": str(payload.get("pause_reason") or current.get("pause_reason") or ""),
+        }
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO scheduler_configs (
+                    key, enabled, frequency, day_of_week, day_of_month, time_of_day, timezone,
+                    updated_at, last_run_at, last_status, last_error, paused_until, pause_reason
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    enabled = excluded.enabled,
+                    frequency = excluded.frequency,
+                    day_of_week = excluded.day_of_week,
+                    day_of_month = excluded.day_of_month,
+                    time_of_day = excluded.time_of_day,
+                    timezone = excluded.timezone,
+                    updated_at = excluded.updated_at,
+                    last_run_at = excluded.last_run_at,
+                    last_status = excluded.last_status,
+                    last_error = excluded.last_error,
+                    paused_until = excluded.paused_until,
+                    pause_reason = excluded.pause_reason
+                """,
+                (
+                    normalized["key"],
+                    normalized["enabled"],
+                    normalized["frequency"],
+                    normalized["day_of_week"],
+                    normalized["day_of_month"],
+                    normalized["time_of_day"],
+                    normalized["timezone"],
+                    normalized["updated_at"],
+                    normalized["last_run_at"],
+                    normalized["last_status"],
+                    normalized["last_error"],
+                    normalized["paused_until"],
+                    normalized["pause_reason"],
+                ),
+            )
+        return self.get_scheduler_configs()[str(key)]
+
+    def create_scheduler_run(self, scheduler_key: str) -> dict[str, Any]:
+        self.initialize()
+        payload = {
+            "id": uuid.uuid4().hex,
+            "scheduler_key": str(scheduler_key or "").strip(),
+            "status": "running",
+            "started_at": _utc_now(),
+            "finished_at": "",
+            "result_json": "{}",
+            "error_message": "",
+        }
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO scheduler_runs (id, scheduler_key, status, started_at, finished_at, result_json, error_message)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                tuple(payload.values()),
+            )
+        return payload
+
+    def finish_scheduler_run(self, run_id: str, *, status: str, result: dict[str, Any] | None = None, error_message: str = "") -> None:
+        self.initialize()
+        now = _utc_now()
+        with self._connect() as connection:
+            row = connection.execute("SELECT scheduler_key FROM scheduler_runs WHERE id = ?", (str(run_id or "").strip(),)).fetchone()
+            connection.execute(
+                """
+                UPDATE scheduler_runs
+                SET status = ?, finished_at = ?, result_json = ?, error_message = ?
+                WHERE id = ?
+                """,
+                (str(status or "completed"), now, json.dumps(result or {}, ensure_ascii=False), str(error_message or ""), str(run_id or "").strip()),
+            )
+            if row is not None:
+                connection.execute(
+                    """
+                    UPDATE scheduler_configs
+                    SET last_run_at = ?, last_status = ?, last_error = ?
+                    WHERE key = ?
+                    """,
+                    (now, str(status or "completed"), str(error_message or ""), str(row["scheduler_key"] or "")),
+                )
+
+    def list_scheduler_runs(self, scheduler_key: str, limit: int = 20) -> list[dict[str, Any]]:
+        self.initialize()
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM scheduler_runs WHERE scheduler_key = ?
+                ORDER BY started_at DESC LIMIT ?
+                """,
+                (str(scheduler_key or "").strip(), max(int(limit), 1)),
+            ).fetchall()
+        return [_to_dict(row) or {} for row in rows]
+
+    def save_wechat_mp_credentials(self, *, token_encrypted: str, cookie_encrypted: str) -> dict[str, Any]:
+        self.initialize()
+        payload = {
+            "id": "default",
+            "token_encrypted": str(token_encrypted or ""),
+            "cookie_encrypted": str(cookie_encrypted or ""),
+            "updated_at": _utc_now(),
+        }
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO wechat_mp_credentials (id, token_encrypted, cookie_encrypted, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    token_encrypted = excluded.token_encrypted,
+                    cookie_encrypted = excluded.cookie_encrypted,
+                    updated_at = excluded.updated_at
+                """,
+                tuple(payload.values()),
+            )
+        return payload
+
+    def get_wechat_mp_credentials(self) -> dict[str, Any] | None:
+        self.initialize()
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM wechat_mp_credentials WHERE id = 'default'").fetchone()
+        return _to_dict(row)
+
+    def create_wechat_mp_qr_session(
+        self,
+        *,
+        qrcode_url: str,
+        uuid_cookie: str,
+        qrcode_bytes_b64: str = "",
+        expires_at: str = "",
+    ) -> dict[str, Any]:
+        self.initialize()
+        now = _utc_now()
+        payload = {
+            "id": uuid.uuid4().hex,
+            "status": "pending",
+            "uuid_cookie": str(uuid_cookie or ""),
+            "qrcode_url": str(qrcode_url or ""),
+            "qrcode_bytes_b64": str(qrcode_bytes_b64 or ""),
+            "token": "",
+            "cookie": "",
+            "error_message": "",
+            "created_at": now,
+            "updated_at": now,
+            "expires_at": str(expires_at or ""),
+        }
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO wechat_mp_qr_sessions (
+                    id, status, uuid_cookie, qrcode_url, qrcode_bytes_b64, token, cookie,
+                    error_message, created_at, updated_at, expires_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                tuple(payload.values()),
+            )
+        return payload
+
+    def update_wechat_mp_qr_session(self, session_id: str, **fields: Any) -> dict[str, Any] | None:
+        self.initialize()
+        current = self.get_wechat_mp_qr_session(session_id)
+        if current is None:
+            return None
+        updated = {**current, **fields, "updated_at": _utc_now()}
+        columns = [
+            "status",
+            "uuid_cookie",
+            "qrcode_url",
+            "qrcode_bytes_b64",
+            "token",
+            "cookie",
+            "error_message",
+            "updated_at",
+            "expires_at",
+        ]
+        with self._connect() as connection:
+            connection.execute(
+                f"UPDATE wechat_mp_qr_sessions SET {', '.join(f'{column} = ?' for column in columns)} WHERE id = ?",
+                tuple(updated[column] for column in columns) + (str(session_id or "").strip(),),
+            )
+            row = connection.execute("SELECT * FROM wechat_mp_qr_sessions WHERE id = ?", (str(session_id or "").strip(),)).fetchone()
+        return _to_dict(row)
+
+    def get_wechat_mp_qr_session(self, session_id: str) -> dict[str, Any] | None:
+        self.initialize()
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM wechat_mp_qr_sessions WHERE id = ?", (str(session_id or "").strip(),)).fetchone()
         return _to_dict(row)
 
     def encode_json(self, payload: dict[str, Any]) -> str:
