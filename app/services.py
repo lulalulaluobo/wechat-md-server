@@ -1272,7 +1272,9 @@ def sync_source_articles(
                 article_ids.append(str(article.get("id") or ""))
             if stop_after_page:
                 break
-            begin += len(items)
+            push_count = int(payload.get("push_count") or len(items))
+            # 必须按照微信返回的 push_list 的数量来递增 begin，不能按打散后的文章数量
+            begin += push_count
         now = _utc_now()
         store.update_sync_source_state(
             source["id"],

@@ -171,7 +171,11 @@ class WechatMPClient:
                         "content_kind": _map_content_kind(article.get("item_show_type")),
                     }
                 )
-        return {"items": items, "total": int(publish_page.get("total_count") or len(items))}
+        return {
+            "items": items,
+            "total": int(publish_page.get("total_count") or len(items)),
+            "push_count": len(raw_list),
+        }
 
 
 def _map_content_kind(item_show_type: Any) -> str:
