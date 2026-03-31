@@ -1141,9 +1141,9 @@ def get_wechat_mp_qr_login_status(session_id: str, http_session=None) -> dict[st
     response.raise_for_status()
     payload = response.json()
     status = "pending"
-    if int(payload.get("status", 0) or 0) == 1:
+    if int(payload.get("status", 0) or 0) == 4:
         status = "scanned"
-    elif int(payload.get("status", 0) or 0) == 4:
+    elif int(payload.get("status", 0) or 0) == 1:
         status = "confirmed"
     elif int(payload.get("status", 0) or 0) == 0:
         status = "pending"
