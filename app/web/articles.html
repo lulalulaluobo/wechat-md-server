@@ -13,7 +13,6 @@
   <nav class="top-nav">
     <div class="logo">Wechat <span>MD</span></div>
     <a class="nav-item" href="/">转换</a>
-    <a class="nav-item" href="/tasks">任务历史</a>
     <a class="nav-item" href="/sync">同步源</a>
     <a class="nav-item active" href="/articles">文章库</a>
     <a class="nav-item" href="/settings">设置</a>
@@ -49,6 +48,14 @@
             <option value="">全部</option>
             <option value="true">已入库</option>
             <option value="false">未入库</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="filter-has-execution">执行记录</label>
+          <select id="filter-has-execution">
+            <option value="">全部</option>
+            <option value="true">有执行记录</option>
+            <option value="false">仅索引未执行</option>
           </select>
         </div>
       </div>
@@ -89,6 +96,7 @@
               <th style="text-align:left; padding:10px 8px;">发布时间</th>
               <th style="text-align:left; padding:10px 8px;">抓取状态</th>
               <th style="text-align:left; padding:10px 8px;">处理状态</th>
+              <th style="text-align:left; padding:10px 8px;">最近执行</th>
               <th style="text-align:left; padding:10px 8px;">入库</th>
               <th style="text-align:left; padding:10px 8px;">链接</th>
             </tr>
@@ -97,11 +105,18 @@
         </table>
       </div>
     </div>
+
+    <div class="card">
+      <h2 class="card-title">执行历史</h2>
+      <p class="card-desc">查看单篇文章最近的执行尝试，包括单链转换、批量入队后的执行，以及重跑记录。</p>
+      <div id="article-execution-area" class="text-muted">点击上方“查看执行”后加载。</div>
+    </div>
   </div>
 
   <script src="/assets/admin.js"></script>
   <script>
     const state = { items: [], sources: [], ingestJobId: "" };
+    const initialParams = new URLSearchParams(window.location.search);
 
     function dateToTimestamp(inputId, isEnd) {
       const value = document.getElementById(inputId).value;
@@ -124,6 +139,10 @@
       const body = document.getElementById("articles-table-body");
       body.innerHTML = "";
       state.items.forEach((item) => {
+        const latestExecution = item.latest_execution || null;
+        const latestExecutionText = latestExecution
+          ? `${latestExecution.status || "-"} / ${latestExecution.trigger_channel || "-"}`
+          : "未执行";
         const row = document.createElement("tr");
         row.innerHTML = `
           <td style="padding:10px 8px;"><input type="checkbox" class="article-selector" value="${AdminUI.escapeHtml(item.id)}"></td>
@@ -132,10 +151,17 @@
           <td style="padding:10px 8px;">${AdminUI.escapeHtml(formatTimestamp(item.publish_time))}</td>
           <td style="padding:10px 8px;">${AdminUI.escapeHtml(item.fetch_status || "-")}</td>
           <td style="padding:10px 8px;">${AdminUI.escapeHtml(item.process_status || "-")}</td>
+          <td style="padding:10px 8px;">
+            <div>${AdminUI.escapeHtml(latestExecutionText)}</div>
+            <button class="btn btn-ghost article-history-btn" data-article-id="${AdminUI.escapeHtml(item.id)}" style="margin-top:6px;">查看执行</button>
+          </td>
           <td style="padding:10px 8px;">${item.is_ingested ? "已入库" : "未入库"}</td>
           <td style="padding:10px 8px;"><a href="${AdminUI.escapeHtml(item.article_url || "#")}" target="_blank" rel="noreferrer">查看链接</a></td>
         `;
         body.appendChild(row);
+      });
+      document.querySelectorAll(".article-history-btn").forEach((button) => {
+        button.addEventListener("click", () => loadArticleExecutions(button.getAttribute("data-article-id")));
       });
     }
 
@@ -151,13 +177,19 @@
       const accountFakeid = document.getElementById("filter-account").value;
       const processStatus = document.getElementById("filter-process-status").value;
       const ingested = document.getElementById("filter-ingested").value;
+      const hasExecution = document.getElementById("filter-has-execution").value;
       const startTs = dateToTimestamp("filter-start-date", false);
       const endTs = dateToTimestamp("filter-end-date", true);
+      const sourceId = initialParams.get("source_id") || "";
+      const syncRunId = initialParams.get("sync_run_id") || "";
       if (accountFakeid) params.set("account_fakeid", accountFakeid);
       if (processStatus) params.set("process_status", processStatus);
       if (ingested) params.set("is_ingested", ingested);
+      if (hasExecution) params.set("has_execution", hasExecution);
       if (startTs != null) params.set("published_from", String(startTs));
       if (endTs != null) params.set("published_to", String(endTs));
+      if (sourceId) params.set("source_id", sourceId);
+      if (syncRunId) params.set("sync_run_id", syncRunId);
       params.set("limit", "200");
       const res = await fetch(`/api/sync/articles?${params.toString()}`);
       const data = await res.json();
@@ -167,6 +199,22 @@
       }
       state.items = data.items || [];
       renderArticleRows();
+    }
+
+    async function loadArticleExecutions(articleId) {
+      const res = await fetch(`/api/sync/articles/${articleId}/executions?limit=20`);
+      const data = await res.json();
+      if (!res.ok) {
+        AdminUI.toast(data.detail || "执行历史加载失败", "error");
+        return;
+      }
+      const html = AdminUI.resultHtml({
+        title: "文章执行历史",
+        tone: "info",
+        description: `共 ${data.total || 0} 条执行记录。`,
+        json: data,
+      });
+      AdminUI.setHtml("article-execution-area", html);
     }
 
     async function pollIngestJob(jobId) {
@@ -218,6 +266,7 @@
     document.getElementById("filter-account").addEventListener("change", loadArticles);
     document.getElementById("filter-process-status").addEventListener("change", loadArticles);
     document.getElementById("filter-ingested").addEventListener("change", loadArticles);
+    document.getElementById("filter-has-execution").addEventListener("change", loadArticles);
     document.getElementById("filter-start-date").addEventListener("change", loadArticles);
     document.getElementById("filter-end-date").addEventListener("change", loadArticles);
     document.getElementById("logout-btn").addEventListener("click", async () => {

@@ -23,7 +23,6 @@ from app.services import (  # noqa: E402
     process_feishu_convert_task,
     process_telegram_convert_task,
 )
-from app.task_history import TaskHistoryStore  # noqa: E402
 
 
 class ApiTests(unittest.TestCase):
@@ -100,13 +99,12 @@ class ApiTests(unittest.TestCase):
         self.assertIn('document.getElementById("batch-urls").value = "";', response.text)
         self.assertIn('fileInput.value = "";', response.text)
 
-    def test_tasks_page_renders_after_login(self):
+    def test_tasks_page_redirects_to_articles_after_login(self):
         self._login()
-        response = self.client.get("/tasks")
+        response = self.client.get("/tasks", follow_redirects=False)
 
-        self.assertEqual(response.status_code, 200)
-        self.assertIn("任务历史", response.text)
-        self.assertIn("重跑选中任务", response.text)
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(response.headers["location"], "/articles")
 
     def test_wrong_password_is_rejected(self):
         response = self._login(password="wrong-password")
@@ -378,6 +376,53 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(list_response.status_code, 200)
         self.assertEqual(list_response.json()["items"][0]["account_fakeid"], "fakeid-1")
 
+    def test_sync_source_run_returns_preview_without_auto_ingest(self):
+        self._login()
+        create_response = self.client.post(
+            "/api/sync/sources",
+            json={"fakeid": "fakeid-preview", "nickname": "预览公众号", "alias": "preview"},
+        )
+        source_id = create_response.json()["source"]["id"]
+        payloads = [
+            {
+                "items": [
+                    {
+                        "article_url": "https://mp.weixin.qq.com/s/preview-1",
+                        "title": "预览文章 1",
+                        "author": "作者甲",
+                        "publish_time": 1711929600,
+                        "create_time": 1711929600,
+                        "digest": "摘要",
+                        "cover": "",
+                        "content_kind": "article",
+                    }
+                ]
+            },
+            {"items": []},
+        ]
+
+        with patch("app.services.WechatMPClient.fetch_articles", side_effect=payloads):
+            with patch("app.services.submit_article_ingest") as mocked_ingest:
+                response = self.client.post(
+                    f"/api/sync/sources/{source_id}/sync",
+                    json={
+                        "start_date": "2024-04-01",
+                        "end_date": "2024-04-02",
+                        "queue_for_ingest": True,
+                        "ai_enabled": True,
+                        "skip_ingested": False,
+                    },
+                )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["queued_count"], 0)
+        self.assertEqual(data["preview_count"], 1)
+        self.assertEqual(len(data["items"]), 1)
+        self.assertEqual(data["items"][0]["title"], "预览文章 1")
+        self.assertIn("预览", data["message"])
+        mocked_ingest.assert_not_called()
+
     def test_batch_from_text(self):
         self._login()
         with patch("app.api.routes.job_store.create_batch_job") as mocked:
@@ -473,47 +518,142 @@ class ApiTests(unittest.TestCase):
 
     def test_tasks_api_lists_history_records(self):
         self._login()
-        store = TaskHistoryStore(Path(self.temp_dir.name) / "task-history.jsonl")
-        first = store.create_task(
+        from app.services import get_sync_store
+
+        store = get_sync_store()
+        first, _ = store.upsert_article(
+            {
+                "article_url": "https://mp.weixin.qq.com/s/example",
+                "source_type": "wechat",
+                "title": "微信笔记",
+                "fetch_status": "success",
+                "process_status": "success",
+            }
+        )
+        store.create_article_execution(
+            article_id=str(first["id"]),
+            article_url=str(first["article_url"]),
             trigger_channel="web",
             source_type="wechat",
-            source_url="https://mp.weixin.qq.com/s/example",
+            status="success",
+            note_title="微信笔记",
         )
-        store.update_task(first["task_id"], status="success", note_title="微信笔记")
-        second = store.create_task(
+        second, _ = store.upsert_article(
+            {
+                "article_url": "https://example.com/error",
+                "source_type": "web",
+                "title": "错误网页",
+                "fetch_status": "error",
+                "process_status": "error",
+            }
+        )
+        failure = store.create_article_execution(
+            article_id=str(second["id"]),
+            article_url=str(second["article_url"]),
             trigger_channel="telegram",
             source_type="web",
-            source_url="https://example.com/error",
+            status="error",
+            error_message="boom",
         )
-        store.update_task(second["task_id"], status="error", error_message="boom")
 
         response = self.client.get("/api/tasks?source_type=web&status=error")
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertEqual(payload["total"], 1)
-        self.assertEqual(payload["items"][0]["task_id"], second["task_id"])
+        self.assertEqual(payload["items"][0]["task_id"], failure["id"])
         self.assertEqual(payload["items"][0]["source_type"], "web")
+        self.assertEqual(payload["items"][0]["article_url"], "https://example.com/error")
+
+    def test_convert_records_article_execution_history_in_database(self):
+        self._login()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            markdown_path = Path(temp_dir) / "article.md"
+            markdown_path.write_text("# 示例\n\n正文", encoding="utf-8")
+            with patch(
+                "app.services.fetch_article_from_url",
+                return_value=(
+                    "wechat",
+                    SimpleNamespace(
+                        title="示例文章",
+                        author="作者甲",
+                        account_name="示例号",
+                        content_html="<p>正文</p>",
+                        original_url="https://mp.weixin.qq.com/s/history-case",
+                    ),
+                    "<html></html>",
+                    {"fetch_status": "success", "content_kind": "article", "comment_id": "", "cache_hit": False, "failure_reason": ""},
+                ),
+            ):
+                with patch(
+                    "app.services.run_article_pipeline",
+                    return_value={
+                        "title": "示例文章",
+                        "author": "作者甲",
+                        "account_name": "示例号",
+                        "markdown_file": str(markdown_path),
+                        "publish_time": 1711929600,
+                    },
+                ):
+                    with patch(
+                        "app.services.sync_result_to_output",
+                        return_value={"status": "success", "target": "fns", "path": "00_Inbox/微信公众号/示例文章.md"},
+                    ):
+                        convert_response = self.client.post(
+                            "/api/convert",
+                            json={"url": "https://mp.weixin.qq.com/s/history-case"},
+                        )
+
+        self.assertEqual(convert_response.status_code, 200)
+        articles_response = self.client.get("/api/sync/articles?has_execution=true")
+        self.assertEqual(articles_response.status_code, 200)
+        articles_payload = articles_response.json()
+        self.assertEqual(articles_payload["total"], 1)
+        article = articles_payload["items"][0]
+        self.assertEqual(article["title"], "示例文章")
+        self.assertEqual(article["latest_execution"]["status"], "success")
+        self.assertEqual(article["latest_execution"]["sync_path"], "00_Inbox/微信公众号/示例文章.md")
+
+        executions_response = self.client.get(f"/api/sync/articles/{article['id']}/executions")
+
+        self.assertEqual(executions_response.status_code, 200)
+        executions_payload = executions_response.json()
+        self.assertEqual(executions_payload["total"], 1)
+        self.assertEqual(executions_payload["items"][0]["task_id"], convert_response.json()["task_id"])
+        self.assertEqual(executions_payload["items"][0]["status"], "success")
 
     def test_single_rerun_api_accepts_existing_task(self):
         self._login()
-        store = TaskHistoryStore(Path(self.temp_dir.name) / "task-history.jsonl")
-        task = store.create_task(
+        from app.services import get_sync_store
+
+        store = get_sync_store()
+        article, _ = store.upsert_article(
+            {
+                "article_url": "https://example.com/post",
+                "source_type": "web",
+                "title": "网页文章",
+                "fetch_status": "success",
+                "process_status": "success",
+            }
+        )
+        task = store.create_article_execution(
+            article_id=str(article["id"]),
+            article_url=str(article["article_url"]),
             trigger_channel="web",
             source_type="web",
-            source_url="https://example.com/post",
+            status="success",
         )
 
         with patch(
             "app.api.routes.submit_rerun_task",
-            return_value={"task_id": "rerun-1", "rerun_of_task_id": task["task_id"]},
+            return_value={"task_id": "rerun-1", "rerun_of_task_id": task["id"]},
         ) as mocked:
-            response = self.client.post(f"/api/tasks/{task['task_id']}/rerun")
+            response = self.client.post(f"/api/tasks/{task['id']}/rerun")
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "accepted")
         self.assertEqual(response.json()["task_id"], "rerun-1")
-        mocked.assert_called_once_with(task["task_id"])
+        mocked.assert_called_once_with(task["id"])
 
     def test_batch_rerun_api_accepts_selected_tasks(self):
         self._login()
@@ -578,6 +718,17 @@ class ApiTests(unittest.TestCase):
         self.assertIn("设置中心", text)
         self.assertIn("检测 FNS 连接", text)
         self.assertIn('id="fns-status-result"', text)
+
+    def test_settings_page_contains_single_conversion_isolation_controls(self):
+        self._login()
+        response = self.client.get("/settings")
+
+        self.assertEqual(response.status_code, 200)
+        text = response.text
+        self.assertIn('id="single-conversion-isolation-enabled"', text)
+        self.assertIn('id="single-conversion-hard-timeout-seconds"', text)
+        self.assertIn("单篇转换进程隔离", text)
+        self.assertIn("单篇转换硬超时", text)
         self.assertIn("当前登录用户", text)
         self.assertIn("修改密码", text)
         self.assertIn('id="change-pw-btn" class="btn btn-danger"', text)

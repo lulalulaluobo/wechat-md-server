@@ -14,7 +14,6 @@ from app.services import (  # noqa: E402
     _invoke_isolated_worker,
     execute_single_conversion,
     get_sync_store,
-    get_task_history_store,
 )
 
 
@@ -70,7 +69,7 @@ class ServicesIsolationTests(unittest.TestCase):
                     output_target="local",
                 )
 
-        tasks = get_task_history_store().list_tasks(limit=10)
+        tasks = get_sync_store().list_article_executions(limit=10)
         self.assertEqual(tasks["total"], 1)
         task = tasks["items"][0]
         self.assertEqual(task["status"], "error")

@@ -25,6 +25,16 @@ def _normalize_bool(value: Any) -> int:
     return 1 if bool(value) else 0
 
 
+def _ensure_column(connection: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    columns = {
+        str(row["name"])
+        for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
+    }
+    if column in columns:
+        return
+    connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
 class SyncStore:
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -105,6 +115,7 @@ class SyncStore:
                         raw_html_path TEXT NOT NULL DEFAULT '',
                         normalized_json_path TEXT NOT NULL DEFAULT '',
                         latest_markdown_path TEXT NOT NULL DEFAULT '',
+                        last_sync_run_id TEXT NOT NULL DEFAULT '',
                         content_hash TEXT NOT NULL DEFAULT '',
                         created_at TEXT NOT NULL,
                         updated_at TEXT NOT NULL
@@ -159,8 +170,38 @@ class SyncStore:
                         updated_at TEXT NOT NULL,
                         finished_at TEXT NOT NULL DEFAULT ''
                     );
+
+                    CREATE TABLE IF NOT EXISTS article_executions (
+                        id TEXT PRIMARY KEY,
+                        article_id TEXT NOT NULL,
+                        article_url TEXT NOT NULL,
+                        trigger_channel TEXT NOT NULL DEFAULT 'web',
+                        source_type TEXT NOT NULL DEFAULT 'wechat',
+                        status TEXT NOT NULL DEFAULT 'queued',
+                        ai_enabled INTEGER NOT NULL DEFAULT 0,
+                        output_target TEXT NOT NULL DEFAULT 'fns',
+                        sync_run_id TEXT NOT NULL DEFAULT '',
+                        ingest_job_id TEXT NOT NULL DEFAULT '',
+                        rerun_of_execution_id TEXT NOT NULL DEFAULT '',
+                        fetch_status TEXT NOT NULL DEFAULT '',
+                        content_kind TEXT NOT NULL DEFAULT '',
+                        note_title TEXT NOT NULL DEFAULT '',
+                        sync_path TEXT NOT NULL DEFAULT '',
+                        error_message TEXT NOT NULL DEFAULT '',
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        started_at TEXT NOT NULL DEFAULT '',
+                        finished_at TEXT NOT NULL DEFAULT '',
+                        FOREIGN KEY(article_id) REFERENCES articles(id)
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_article_executions_article_created
+                        ON article_executions(article_id, created_at DESC);
+                    CREATE INDEX IF NOT EXISTS idx_article_executions_status
+                        ON article_executions(status, source_type, trigger_channel);
                     """
                 )
+                _ensure_column(connection, "articles", "last_sync_run_id", "TEXT NOT NULL DEFAULT ''")
             self._initialized = True
 
     def build_cache_key(self, article_url: str) -> str:
@@ -446,6 +487,7 @@ class SyncStore:
             "raw_html_path": str(payload.get("raw_html_path") or "").strip(),
             "normalized_json_path": str(payload.get("normalized_json_path") or "").strip(),
             "latest_markdown_path": str(payload.get("latest_markdown_path") or "").strip(),
+            "last_sync_run_id": str(payload.get("last_sync_run_id") or "").strip(),
             "content_hash": str(payload.get("content_hash") or "").strip(),
             "created_at": now,
             "updated_at": now,
@@ -495,6 +537,7 @@ class SyncStore:
                     raw_html_path = excluded.raw_html_path,
                     normalized_json_path = excluded.normalized_json_path,
                     latest_markdown_path = excluded.latest_markdown_path,
+                    last_sync_run_id = excluded.last_sync_run_id,
                     content_hash = excluded.content_hash,
                     updated_at = excluded.updated_at
                 """,
@@ -519,6 +562,9 @@ class SyncStore:
         self,
         *,
         account_fakeid: str | None = None,
+        source_id: str | None = None,
+        sync_run_id: str | None = None,
+        has_execution: bool | None = None,
         process_status: str | None = None,
         is_ingested: bool | None = None,
         published_from: int | None = None,
@@ -532,6 +578,16 @@ class SyncStore:
         if account_fakeid:
             clauses.append("account_fakeid = ?")
             params.append(str(account_fakeid).strip())
+        if source_id:
+            clauses.append("account_fakeid = (SELECT account_fakeid FROM sync_sources WHERE id = ?)")
+            params.append(str(source_id).strip())
+        if sync_run_id:
+            clauses.append("last_sync_run_id = ?")
+            params.append(str(sync_run_id).strip())
+        if has_execution is True:
+            clauses.append("EXISTS (SELECT 1 FROM article_executions WHERE article_executions.article_id = articles.id)")
+        elif has_execution is False:
+            clauses.append("NOT EXISTS (SELECT 1 FROM article_executions WHERE article_executions.article_id = articles.id)")
         if process_status:
             clauses.append("process_status = ?")
             params.append(str(process_status).strip())
@@ -557,8 +613,15 @@ class SyncStore:
                 """,
                 tuple(params + [max(int(limit), 1), max(int(offset), 0)]),
             ).fetchall()
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            article = _to_dict(row) or {}
+            latest_execution = self.get_latest_article_execution(str(article.get("id") or ""))
+            article["latest_execution"] = latest_execution
+            article["has_execution"] = latest_execution is not None
+            items.append(article)
         return {
-            "items": [_to_dict(row) or {} for row in rows],
+            "items": items,
             "total": int(total or 0),
             "limit": int(limit),
             "offset": int(offset),
@@ -610,6 +673,184 @@ class SyncStore:
         params.append(str(article_url or "").strip())
         with self._connect() as connection:
             connection.execute(f"UPDATE articles SET {', '.join(updates)} WHERE article_url = ?", tuple(params))
+
+    def create_article_execution(
+        self,
+        *,
+        article_id: str,
+        article_url: str,
+        trigger_channel: str,
+        source_type: str,
+        status: str = "queued",
+        ai_enabled: bool = False,
+        output_target: str = "fns",
+        sync_run_id: str = "",
+        ingest_job_id: str = "",
+        rerun_of_execution_id: str = "",
+        fetch_status: str = "",
+        content_kind: str = "",
+        note_title: str = "",
+        sync_path: str = "",
+        error_message: str = "",
+    ) -> dict[str, Any]:
+        self.initialize()
+        now = _utc_now()
+        payload = {
+            "id": uuid.uuid4().hex,
+            "article_id": str(article_id or "").strip(),
+            "article_url": str(article_url or "").strip(),
+            "trigger_channel": str(trigger_channel or "web").strip() or "web",
+            "source_type": str(source_type or "wechat").strip() or "wechat",
+            "status": str(status or "queued").strip() or "queued",
+            "ai_enabled": _normalize_bool(ai_enabled),
+            "output_target": str(output_target or "fns").strip() or "fns",
+            "sync_run_id": str(sync_run_id or "").strip(),
+            "ingest_job_id": str(ingest_job_id or "").strip(),
+            "rerun_of_execution_id": str(rerun_of_execution_id or "").strip(),
+            "fetch_status": str(fetch_status or "").strip(),
+            "content_kind": str(content_kind or "").strip(),
+            "note_title": str(note_title or "").strip(),
+            "sync_path": str(sync_path or "").strip(),
+            "error_message": str(error_message or "").strip(),
+            "created_at": now,
+            "updated_at": now,
+            "started_at": now if status == "running" else "",
+            "finished_at": now if status in {"success", "error"} else "",
+        }
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO article_executions (
+                    id, article_id, article_url, trigger_channel, source_type, status, ai_enabled,
+                    output_target, sync_run_id, ingest_job_id, rerun_of_execution_id, fetch_status,
+                    content_kind, note_title, sync_path, error_message, created_at, updated_at,
+                    started_at, finished_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                tuple(payload.values()),
+            )
+            row = connection.execute("SELECT * FROM article_executions WHERE id = ?", (payload["id"],)).fetchone()
+        return _to_dict(row) or payload
+
+    def update_article_execution(self, execution_id: str, **fields: Any) -> dict[str, Any] | None:
+        self.initialize()
+        current = self.get_article_execution(execution_id)
+        if current is None:
+            return None
+        updated = {**current, **fields, "updated_at": _utc_now()}
+        status = str(updated.get("status") or "").strip()
+        if status == "running" and not str(updated.get("started_at") or "").strip():
+            updated["started_at"] = _utc_now()
+        if status in {"success", "error"} and not str(updated.get("finished_at") or "").strip():
+            updated["finished_at"] = _utc_now()
+        columns = [
+            "status",
+            "ai_enabled",
+            "output_target",
+            "sync_run_id",
+            "ingest_job_id",
+            "rerun_of_execution_id",
+            "fetch_status",
+            "content_kind",
+            "note_title",
+            "sync_path",
+            "error_message",
+            "updated_at",
+            "started_at",
+            "finished_at",
+        ]
+        with self._connect() as connection:
+            connection.execute(
+                f"UPDATE article_executions SET {', '.join(f'{column} = ?' for column in columns)} WHERE id = ?",
+                tuple(updated[column] for column in columns) + (str(execution_id or "").strip(),),
+            )
+            row = connection.execute(
+                "SELECT * FROM article_executions WHERE id = ?",
+                (str(execution_id or "").strip(),),
+            ).fetchone()
+        return _to_dict(row)
+
+    def get_article_execution(self, execution_id: str) -> dict[str, Any] | None:
+        self.initialize()
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM article_executions WHERE id = ?",
+                (str(execution_id or "").strip(),),
+            ).fetchone()
+        execution = _to_dict(row)
+        if execution is not None:
+            execution["task_id"] = execution["id"]
+        return execution
+
+    def get_latest_article_execution(self, article_id: str) -> dict[str, Any] | None:
+        self.initialize()
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM article_executions
+                WHERE article_id = ?
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """,
+                (str(article_id or "").strip(),),
+            ).fetchone()
+        execution = _to_dict(row)
+        if execution is not None:
+            execution["task_id"] = execution["id"]
+        return execution
+
+    def list_article_executions(
+        self,
+        *,
+        article_id: str | None = None,
+        trigger_channel: str | None = None,
+        source_type: str | None = None,
+        status: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        self.initialize()
+        clauses = ["1=1"]
+        params: list[Any] = []
+        if article_id:
+            clauses.append("article_id = ?")
+            params.append(str(article_id).strip())
+        if trigger_channel:
+            clauses.append("trigger_channel = ?")
+            params.append(str(trigger_channel).strip())
+        if source_type:
+            clauses.append("source_type = ?")
+            params.append(str(source_type).strip())
+        if status:
+            clauses.append("status = ?")
+            params.append(str(status).strip())
+
+        where_sql = " AND ".join(clauses)
+        with self._connect() as connection:
+            total = connection.execute(
+                f"SELECT COUNT(*) FROM article_executions WHERE {where_sql}",
+                tuple(params),
+            ).fetchone()[0]
+            rows = connection.execute(
+                f"""
+                SELECT * FROM article_executions
+                WHERE {where_sql}
+                ORDER BY created_at DESC, id DESC
+                LIMIT ? OFFSET ?
+                """,
+                tuple(params + [max(int(limit), 1), max(int(offset), 0)]),
+            ).fetchall()
+        items = []
+        for row in rows:
+            item = _to_dict(row) or {}
+            item["task_id"] = item.get("id")
+            items.append(item)
+        return {
+            "items": items,
+            "total": int(total or 0),
+            "limit": int(limit),
+            "offset": int(offset),
+        }
 
     def record_artifact(self, article_url: str, artifact_type: str, path: str, *, status: str = "ready") -> dict[str, Any]:
         self.initialize()

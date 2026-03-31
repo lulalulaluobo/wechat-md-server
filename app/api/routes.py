@@ -43,8 +43,8 @@ from app.services import (
     get_ingest_job,
     get_internal_workdir_root,
     get_task,
-    get_task_history_store,
     job_store,
+    list_article_execution_history,
     list_tasks,
     list_sync_articles,
     list_sync_sources_payload,
@@ -63,9 +63,6 @@ from app.services import (
     test_ai_connectivity,
     TELEGRAM_SECRET_HEADER,
 )
-from app.content_sources import detect_source_type
-
-
 router = APIRouter()
 _BOT_EVENT_TTL_SECONDS = 10 * 60
 _bot_event_cache: dict[str, float] = {}
@@ -164,18 +161,7 @@ async def convert_batch(
     output_target = build_output_target(payload.get("output_target"))
     output_dir = get_internal_workdir_root() if output_target == "fns" else normalize_output_dir(payload.get("output_dir"))
 
-    task_store = get_task_history_store()
-    task_items = [
-        {
-            "url": url,
-            "task_id": task_store.create_task(
-                trigger_channel="web",
-                source_type=detect_source_type(url),
-                source_url=url,
-            )["task_id"],
-        }
-        for url in urls
-    ]
+    task_items = [{"url": url, "task_id": ""} for url in urls]
 
     job = job_store.create_batch_job(
         urls=urls,
@@ -241,7 +227,7 @@ async def rerun_task(
         raise HTTPException(status_code=404, detail="任务不存在")
     try:
         payload = submit_rerun_task(task_id)
-    except ValueError as error:
+    except (KeyError, ValueError) as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     return {"status": "accepted", **payload}
 
@@ -553,6 +539,9 @@ async def post_sync_source_run(
 @router.get("/api/sync/articles")
 async def get_sync_articles(
     account_fakeid: str | None = None,
+    source_id: str | None = None,
+    sync_run_id: str | None = None,
+    has_execution: bool | None = None,
     process_status: str | None = None,
     is_ingested: bool | None = None,
     published_from: int | None = None,
@@ -564,6 +553,9 @@ async def get_sync_articles(
     _require_access(session_cookie)
     return list_sync_articles(
         account_fakeid=account_fakeid,
+        source_id=source_id,
+        sync_run_id=sync_run_id,
+        has_execution=has_execution,
         process_status=process_status,
         is_ingested=is_ingested,
         published_from=published_from,
@@ -571,6 +563,17 @@ async def get_sync_articles(
         limit=limit,
         offset=offset,
     )
+
+
+@router.get("/api/sync/articles/{article_id}/executions")
+async def get_sync_article_executions(
+    article_id: str,
+    limit: int = 50,
+    offset: int = 0,
+    session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
+) -> dict[str, Any]:
+    _require_access(session_cookie)
+    return list_article_execution_history(article_id, limit=limit, offset=offset)
 
 
 @router.post("/api/sync/articles/ingest")

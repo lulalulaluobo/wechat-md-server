@@ -43,7 +43,9 @@ async def settings_page(
 async def tasks_page(
     session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
 ):
-    return _resolve_page("tasks.html", session_cookie)
+    if not is_authenticated(session_cookie):
+        return RedirectResponse(url="/login", status_code=303)
+    return RedirectResponse(url="/articles", status_code=303)
 
 
 @app.get("/sync", include_in_schema=False)

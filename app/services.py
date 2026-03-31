@@ -246,29 +246,52 @@ def _prepare_conversion_tracking(
     task_id: str | None,
 ) -> tuple[str, str]:
     source_type = detect_source_type(url)
-    task_store = get_task_history_store()
-    task_record = task_store.get_task(task_id) if task_id else None
-    if task_record is None:
-        task_record = task_store.create_task(
-            trigger_channel=trigger_channel,
-            source_type=source_type,
-            source_url=url,
-            rerun_of_task_id=rerun_of_task_id,
-        )
-        task_id = str(task_record["task_id"])
-    else:
-        task_id = str(task_record["task_id"])
-    task_store.update_task(task_id, status="queued", source_type=source_type, source_url=url, error_message="")
-    get_sync_store().upsert_article(
+    sync_store = get_sync_store()
+    article, _ = sync_store.upsert_article(
         {
             "article_url": url,
             "source_type": source_type,
             "fetch_status": "queued",
             "process_status": "queued",
-            "last_task_id": task_id,
+            "last_task_id": str(task_id or "").strip(),
             "last_error": "",
             "cache_key": build_source_cache_key(url),
         }
+    )
+    if task_id:
+        execution = sync_store.get_article_execution(task_id)
+        if execution is not None:
+            sync_store.update_article_execution(
+                task_id,
+                status="queued",
+                error_message="",
+                fetch_status="queued",
+                content_kind="unknown",
+            )
+            sync_store.update_article_status(
+                url,
+                fetch_status="queued",
+                process_status="queued",
+                last_task_id=task_id,
+                last_error="",
+            )
+            return task_id, source_type
+    execution = sync_store.create_article_execution(
+        article_id=str(article.get("id") or ""),
+        article_url=url,
+        trigger_channel=trigger_channel,
+        source_type=source_type,
+        status="queued",
+        rerun_of_execution_id=str(rerun_of_task_id or "").strip(),
+        output_target="fns" if get_settings().fns_enabled else "local",
+    )
+    task_id = str(execution["id"])
+    sync_store.update_article_status(
+        url,
+        fetch_status="queued",
+        process_status="queued",
+        last_task_id=task_id,
+        last_error="",
     )
     return task_id, source_type
 
@@ -281,11 +304,12 @@ def _mark_conversion_dispatch_failure(
     error: Exception,
 ) -> None:
     message = str(error)
-    get_task_history_store().update_task(
+    get_sync_store().update_article_execution(
         task_id,
         status="error",
         source_type=source_type,
         error_message=message,
+        fetch_status="error",
     )
     get_sync_store().update_article_status(
         url,
@@ -508,17 +532,39 @@ def _run_single_conversion(
     normalized_ai_enabled = resolve_ai_enabled(ai_enabled, settings)
     ensure_runtime_environment()
     source_type = detect_source_type(url)
-    task_store = get_task_history_store()
-    task_record = task_store.get_task(task_id) if task_id else None
-    if task_record is None:
-        task_record = task_store.create_task(
+    article_record = sync_store.get_article_by_url(url)
+    if article_record is None:
+        article_record, _ = sync_store.upsert_article(
+            {
+                "article_url": url,
+                "source_type": source_type,
+                "fetch_status": "queued",
+                "process_status": "queued",
+                "cache_key": build_source_cache_key(url),
+            }
+        )
+    if task_id:
+        sync_store.update_article_execution(
+            task_id,
+            status="running",
+            ai_enabled=normalized_ai_enabled,
+            output_target=normalized_target,
+            error_message="",
+            fetch_status="queued",
+            content_kind="unknown",
+        )
+    else:
+        execution = sync_store.create_article_execution(
+            article_id=str(article_record.get("id") or ""),
+            article_url=url,
             trigger_channel=trigger_channel,
             source_type=source_type,
-            source_url=url,
-            rerun_of_task_id=rerun_of_task_id,
+            status="running",
+            ai_enabled=normalized_ai_enabled,
+            output_target=normalized_target,
+            rerun_of_execution_id=str(rerun_of_task_id or "").strip(),
         )
-        task_id = str(task_record["task_id"])
-    task_store.update_task(task_id, status="running", source_type=source_type, source_url=url)
+        task_id = str(execution["id"])
     fetch_meta: dict[str, Any] = {
         "fetch_status": "queued",
         "content_kind": "unknown",
@@ -591,18 +637,27 @@ def _run_single_conversion(
                 message = str(ai_polish.get("message") or "模板未成功应用")
                 raise RuntimeError(f"AI 润色失败：{message}")
         sync = sync_result_to_output(result, output_target=normalized_target)
-        artifacts = _record_conversion_artifacts(
-            url=url,
-            result=result,
-            fetch_meta=fetch_meta,
-            sync=sync,
-        )
         ingested_at = _utc_now() if normalized_target == "fns" else ""
         markdown_path = Path(str(result.get("markdown_file") or ""))
         content_hash = (
             hashlib.sha256(markdown_path.read_bytes()).hexdigest()
             if markdown_path.exists()
             else ""
+        )
+        local_artifacts = {"retained": False, "workdir": None}
+        if workspace is not None:
+            if settings.cleanup_temp_on_success:
+                cleanup_internal_workdir(workspace)
+            else:
+                local_artifacts = {"retained": True, "workdir": str(workspace)}
+        stable_markdown_path = str(result.get("markdown_file") or "")
+        if workspace is not None and settings.cleanup_temp_on_success:
+            stable_markdown_path = ""
+        artifacts = _record_conversion_artifacts(
+            url=url,
+            result=result,
+            sync=sync,
+            keep_local_files=bool(stable_markdown_path),
         )
         sync_store.upsert_article(
             {
@@ -622,28 +677,35 @@ def _run_single_conversion(
                 "comment_id": str(fetch_meta.get("comment_id") or ""),
                 "cache_key": str(fetch_meta.get("cache_key") or build_source_cache_key(url)),
                 "cache_hit_count": 1 if fetch_meta.get("cache_hit") else 0,
-                "raw_html_path": str(fetch_meta.get("source_html_path") or ""),
-                "normalized_json_path": str(fetch_meta.get("normalized_path") or ""),
-                "latest_markdown_path": str(result.get("markdown_file") or ""),
+                "raw_html_path": "",
+                "normalized_json_path": "",
+                "latest_markdown_path": stable_markdown_path,
                 "content_hash": content_hash,
                 "publish_time": int(result.get("publish_time") or 0),
             }
         )
-        local_artifacts = {"retained": False, "workdir": None}
-        if workspace is not None:
-            if settings.cleanup_temp_on_success:
-                cleanup_internal_workdir(workspace)
-            else:
-                local_artifacts = {"retained": True, "workdir": str(workspace)}
-        task_store.update_task(
+        sync_store.update_article_execution(
             task_id,
             status="success",
-            source_type=source_type,
+            ai_enabled=normalized_ai_enabled,
+            output_target=normalized_target,
+            fetch_status=str(fetch_meta.get("fetch_status") or "success"),
+            content_kind=str(fetch_meta.get("content_kind") or "unknown"),
             note_title=str(result.get("title") or ""),
             sync_path=str(sync.get("path") or sync.get("markdown_file") or ""),
             error_message="",
         )
     except Exception as error:
+        if task_id:
+            sync_store.update_article_execution(
+                task_id,
+                status="error",
+                ai_enabled=normalized_ai_enabled,
+                output_target=normalized_target,
+                fetch_status=str(fetch_meta.get("fetch_status") or "error"),
+                content_kind=str(fetch_meta.get("content_kind") or "unknown"),
+                error_message=str(error),
+            )
         sync_store.update_article_status(
             url,
             fetch_status=str(fetch_meta.get("fetch_status") or "error"),
@@ -651,13 +713,6 @@ def _run_single_conversion(
             last_task_id=task_id,
             last_error=str(error),
         )
-        if task_id:
-            task_store.update_task(
-                task_id,
-                status="error",
-                source_type=source_type,
-                error_message=str(error),
-            )
         cleanup_internal_workdir(workspace)
         raise
 
@@ -682,20 +737,14 @@ def _record_conversion_artifacts(
     *,
     url: str,
     result: dict[str, Any],
-    fetch_meta: dict[str, Any],
     sync: dict[str, Any],
+    keep_local_files: bool,
 ) -> list[dict[str, Any]]:
     store = get_sync_store()
     recorded: list[dict[str, Any]] = []
-    html_path = str(fetch_meta.get("source_html_path") or "").strip()
-    normalized_path = str(fetch_meta.get("normalized_path") or "").strip()
-    markdown_path = str(result.get("markdown_file") or "").strip()
-    rendered_html_path = str(result.get("html_file") or "").strip()
+    markdown_path = str(result.get("markdown_file") or "").strip() if keep_local_files else ""
+    rendered_html_path = str(result.get("html_file") or "").strip() if keep_local_files else ""
     sync_path = str(sync.get("path") or "").strip()
-    if html_path:
-        recorded.append(store.record_artifact(url, "source_html", html_path))
-    if normalized_path:
-        recorded.append(store.record_artifact(url, "normalized_json", normalized_path))
     if markdown_path:
         recorded.append(store.record_artifact(url, "markdown", markdown_path))
     if rendered_html_path:
@@ -865,6 +914,7 @@ def sync_source_articles(
                         "content_kind": str(item.get("content_kind") or "article"),
                         "fetch_status": "indexed",
                         "process_status": "pending",
+                        "last_sync_run_id": run["id"],
                     }
                 )
                 if is_new:
@@ -886,14 +936,7 @@ def sync_source_articles(
         )
         queued_count = 0
         ingest_job = None
-        if queue_for_ingest and article_ids:
-            ingest_job = submit_article_ingest(
-                article_ids=article_ids,
-                ai_enabled=ai_enabled,
-                output_target=output_target,
-                skip_ingested=skip_ingested,
-            )
-            queued_count = int(ingest_job.get("total") or 0)
+        preview = store.list_articles(sync_run_id=run["id"], limit=min(max(len(article_ids), 1), 200), offset=0)
         store.finish_sync_run(
             run["id"],
             status="completed",
@@ -910,6 +953,9 @@ def sync_source_articles(
             "updated_count": updated_count,
             "queued_count": queued_count,
             "ingest_job": ingest_job,
+            "preview_count": int(preview.get("total") or 0),
+            "items": list(preview.get("items") or []),
+            "message": "已抓取索引预览，请在文章库勾选文章后再执行清洗、AI 润色或入库。",
         }
     except Exception as error:
         store.finish_sync_run(
@@ -927,6 +973,9 @@ def sync_source_articles(
 def list_sync_articles(
     *,
     account_fakeid: str | None = None,
+    source_id: str | None = None,
+    sync_run_id: str | None = None,
+    has_execution: bool | None = None,
     process_status: str | None = None,
     is_ingested: bool | None = None,
     published_from: int | None = None,
@@ -936,6 +985,9 @@ def list_sync_articles(
 ) -> dict[str, Any]:
     return get_sync_store().list_articles(
         account_fakeid=account_fakeid,
+        source_id=source_id,
+        sync_run_id=sync_run_id,
+        has_execution=has_execution,
         process_status=process_status,
         is_ingested=is_ingested,
         published_from=published_from,
@@ -1065,7 +1117,7 @@ def list_tasks(
     limit: int = 50,
     offset: int = 0,
 ) -> dict[str, Any]:
-    return get_task_history_store().list_tasks(
+    return get_sync_store().list_article_executions(
         trigger_channel=trigger_channel,
         source_type=source_type,
         status=status,
@@ -1075,21 +1127,47 @@ def list_tasks(
 
 
 def get_task(task_id: str) -> dict[str, Any] | None:
-    return get_task_history_store().get_task(task_id)
+    return get_sync_store().get_article_execution(task_id)
+
+
+def list_article_execution_history(article_id: str, *, limit: int = 50, offset: int = 0) -> dict[str, Any]:
+    return get_sync_store().list_article_executions(
+        article_id=article_id,
+        limit=limit,
+        offset=offset,
+    )
 
 
 def submit_rerun_task(task_id: str) -> dict[str, Any]:
-    original = get_task_history_store().get_task(task_id)
+    store = get_sync_store()
+    original = store.get_article_execution(task_id)
     if original is None:
         raise KeyError(f"任务不存在: {task_id}")
     url = str(original.get("source_url") or "").strip()
+    if not url:
+        url = str(original.get("article_url") or "").strip()
     trigger_channel = str(original.get("trigger_channel") or "web").strip() or "web"
     source_type = detect_source_type(url)
-    rerun_task = get_task_history_store().create_task(
+    article = store.get_article_by_id(str(original.get("article_id") or "")) or store.get_article_by_url(url)
+    if article is None:
+        article, _ = store.upsert_article(
+            {
+                "article_url": url,
+                "source_type": source_type,
+                "fetch_status": "queued",
+                "process_status": "queued",
+                "cache_key": build_source_cache_key(url),
+            }
+        )
+    rerun_task = store.create_article_execution(
+        article_id=str(article.get("id") or ""),
+        article_url=url,
         trigger_channel=trigger_channel,
         source_type=source_type,
-        source_url=url,
-        rerun_of_task_id=task_id,
+        status="queued",
+        ai_enabled=get_settings().ai_enabled,
+        output_target="fns" if get_settings().fns_enabled else "local",
+        rerun_of_execution_id=task_id,
     )
     _rerun_executor.submit(
         execute_single_conversion,
@@ -1101,10 +1179,10 @@ def submit_rerun_task(task_id: str) -> dict[str, Any]:
         require_ai_success=True,
         trigger_channel=trigger_channel,
         rerun_of_task_id=task_id,
-        task_id=str(rerun_task["task_id"]),
+        task_id=str(rerun_task["id"]),
         workspace_prefix="rerun",
     )
-    return {"task_id": str(rerun_task["task_id"]), "rerun_of_task_id": task_id}
+    return {"task_id": str(rerun_task["id"]), "rerun_of_task_id": task_id}
 
 
 def submit_rerun_tasks(task_ids: list[str]) -> dict[str, Any]:
