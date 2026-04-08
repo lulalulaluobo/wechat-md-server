@@ -765,7 +765,8 @@ def get_settings() -> Settings:
     wechat_mp = runtime_user_settings.get("wechat_mp") if isinstance(runtime_user_settings.get("wechat_mp"), dict) else {}
     ai_registry = runtime_user_settings["ai"]
 
-    output_dir = Path(os.environ.get("WECHAT_MD_DEFAULT_OUTPUT_DIR", r"D:\obsidian\00_Inbox")).resolve()
+    default_output_dir = runtime_config_path.parent / "workdir-output"
+    output_dir = Path(os.environ.get("WECHAT_MD_DEFAULT_OUTPUT_DIR", str(default_output_dir))).resolve()
     fns_base_url = str(
         runtime_user_settings.get("fns_base_url") or os.environ.get("WECHAT_MD_FNS_BASE_URL") or ""
     ).strip() or None

@@ -1,10 +1,87 @@
 # wechat-md-server
 
-[中文说明](README.zh-CN.md)
+一个面向 Obsidian 的本地服务，用来抓取微信公众号文章和普通网页长文，清洗后转换成 Markdown，并同步到 Obsidian。
 
-Local FastAPI service for converting WeChat public articles and generic long-form web pages into Markdown and syncing them to Fast Note Sync for Obsidian.
+项目提供 Web 管理界面，支持单篇转换、批量转换、任务历史、图片处理、可选 AI 润色，以及 Telegram / 飞书 Bot 接入。
 
-## Run
+## 项目简介
+
+这个项目主要解决两个问题：
+
+- 把微信公众号文章转成适合长期保存的 Markdown
+- 把转换结果稳定同步到 Obsidian 笔记库
+
+如果你的使用场景是“看到一篇公众号文章或网页长文，想尽快入库到 Obsidian”，这个项目就是为这个流程准备的。
+
+## 核心功能
+
+- 支持微信公众号文章抓取与转换
+- 支持普通网页文章抓取与转换
+- 支持单篇和批量导入
+- 支持任务历史记录与失败重跑
+- 支持两种图片模式：
+  - `wechat_hotlink`：保留原始微信图片链接
+  - `s3_hotlink`：上传静态图片到兼容 S3 的对象存储
+- 支持可选 AI 润色：
+  - 摘要
+  - 标签
+  - Frontmatter
+  - 正文补充块
+  - 全文润色
+- 支持 Telegram Bot / 飞书 Bot webhook 接入
+- 支持登录保护和运行时敏感配置加密存储
+
+## 依赖项目
+
+这个项目和下面两个开源项目关系比较大：
+
+### 1. `wechat-article-exporter`
+
+项目在微信公众号文章抓取、导出链路的调研和实现思路上参考了这个开源项目：
+
+- GitHub: `https://github.com/wechat-article/wechat-article-exporter`
+
+### 2. `obsidian-fast-note-sync`
+
+Obsidian 同步入库这部分，核心依赖的是 Fast Note Sync 对应的能力和配置：
+
+- GitHub: `https://github.com/haierkeys/obsidian-fast-note-sync`
+
+如果你希望把 Markdown 真正同步进 Obsidian，这部分配置是必需的。
+
+## 快速开始
+
+### 1. 准备环境变量
+
+复制示例配置：
+
+```bash
+cp .env.example .env
+```
+
+至少需要确认这几个变量：
+
+```env
+WECHAT_MD_APP_MASTER_KEY=replace-with-a-long-random-secret
+WECHAT_MD_ADMIN_USERNAME=admin
+WECHAT_MD_ADMIN_PASSWORD=replace-with-a-strong-password
+```
+
+说明：
+
+- `WECHAT_MD_APP_MASTER_KEY` 用于加密运行时敏感配置
+- `WECHAT_MD_ADMIN_USERNAME` 和 `WECHAT_MD_ADMIN_PASSWORD` 是后台登录账号
+
+### 2. 本地启动
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+uvicorn app.main:app --host 0.0.0.0 --port 8765
+```
+
+Windows PowerShell：
 
 ```powershell
 python -m venv .venv
@@ -13,312 +90,154 @@ pip install -r requirements.txt
 uvicorn app.main:app --host 0.0.0.0 --port 8765
 ```
 
-Open `http://127.0.0.1:8765` or `http://<your-lan-ip>:8765`.
-
-- Main page: `http://127.0.0.1:8765/` or `http://<your-lan-ip>:8765/`
-- Login: built-in single account
-- Settings page: `http://127.0.0.1:8765/settings` or `http://<your-lan-ip>:8765/settings`
-- Task history page: `http://127.0.0.1:8765/tasks` or `http://<your-lan-ip>:8765/tasks`
-
-## Docker
-
-Recommended container base:
-
-- `python:3.14-slim-bookworm`
-- `amd64 / x86_64`
-- `docker-compose.yml` as the primary deployment entrypoint
-
-Start with Docker Compose:
-
-```bash
-docker compose build
-docker compose up -d
-docker compose logs -f
-```
-
-Production-oriented Compose:
-
-```bash
-docker compose -f docker-compose.prod.yml pull
-docker compose -f docker-compose.prod.yml up -d
-docker compose -f docker-compose.prod.yml logs -f
-```
-
-Open:
+启动后访问：
 
 - `http://127.0.0.1:8765/login`
-- `http://<your-lan-ip>:8765/login`
 
-Container behavior:
+### 3. Docker 启动
 
-- the app listens on `0.0.0.0:8765`
-- runtime data is persisted through `./data:/app/data`
-- runtime config path is `/app/data/runtime-config.json`
-- temporary work output uses `/app/data/workdir-output`
+如果你想用容器运行：
 
-Deployment files:
-
-- `Dockerfile`
-- `.dockerignore`
-- `docker-compose.yml`
-- `docker-compose.prod.yml`
-
-Image size expectation:
-
-- current slim build is typically around `65MB - 80MB`
-- exact size depends on image metadata and wheel reuse
-
-Why not Alpine:
-
-- `Pillow` and `cryptography` are easier to keep stable on Debian slim
-- the project benefits more from predictable wheels and easier debugging than from saving a few tens of MB
-
-## Required Environment
-
-Runtime secrets now depend on a master key. The service will not load encrypted runtime config without it.
-
-- `WECHAT_MD_APP_MASTER_KEY`
-- `WECHAT_MD_ADMIN_USERNAME`
-- `WECHAT_MD_ADMIN_PASSWORD`
-
-If `WECHAT_MD_ADMIN_PASSWORD` is omitted on first boot, the service will generate a random initial password and print it once to stdout.
-
-Copy [.env.example](/path/to/wechat-md-server/.env.example) to your deployment environment and replace all placeholders.
-
-## Defaults
-
-- FNS target directory: `00_Inbox/微信公众号`
-- Image mode: `wechat_hotlink`
-- Runtime config path: `data/runtime-config.json`
-- Internal work directory root: `data/workdir/`
-- Task history path: `data/task-history.jsonl`
-
-Optional environment variables:
-
-- `WECHAT_MD_RUNTIME_CONFIG_PATH`
-- `WECHAT_MD_DEFAULT_OUTPUT_DIR`
-- `WECHAT_MD_SESSION_COOKIE_SECURE`
-- `WECHAT_MD_FNS_BASE_URL`
-- `WECHAT_MD_FNS_TOKEN`
-- `WECHAT_MD_FNS_VAULT`
-- `WECHAT_MD_FNS_TARGET_DIR`
-- `WECHAT_MD_IMAGE_MODE`
-- `WECHAT_MD_IMAGE_STORAGE_PROVIDER`
-- `WECHAT_MD_IMAGE_STORAGE_ENDPOINT`
-- `WECHAT_MD_IMAGE_STORAGE_REGION`
-- `WECHAT_MD_IMAGE_STORAGE_BUCKET`
-- `WECHAT_MD_IMAGE_STORAGE_ACCESS_KEY_ID`
-- `WECHAT_MD_IMAGE_STORAGE_SECRET_ACCESS_KEY`
-- `WECHAT_MD_IMAGE_STORAGE_PATH_TEMPLATE`
-- `WECHAT_MD_IMAGE_STORAGE_PUBLIC_BASE_URL`
-
-## Current Behavior
-
-- The web UI is login-protected.
-- Session cookie supports `Secure` mode through `WECHAT_MD_SESSION_COOKIE_SECURE=true`.
-- Repeated login failures are rate-limited.
-- Sensitive runtime values are encrypted before being written to `runtime-config.json`:
-  - FNS token
-  - S3 secret access key
-  - session secret
-- Converted notes are written to the configured Fast Note Sync target.
-- FNS mode uses internal temporary work directories instead of writing into the Obsidian inbox path directly.
-- Image handling is controlled globally from `/settings`:
-  - `wechat_hotlink`: keep original WeChat image URLs in Markdown
-  - `s3_hotlink`: upload static images to a generic S3-compatible object store and use `public_base_url/object_key`
-- In `s3_hotlink`, GIF and SVG keep the original WeChat image URLs.
-- Optional AI polish can generate:
-  - frontmatter
-  - summary
-  - tags
-  - template blocks
-  - optional `content_polished` body output
-- AI body polish is opt-in and can be overridden per single/batch run.
-- The settings page supports Clipper-style template import from a JSON file and maps it into the internal interpreter template fields.
-- Generic web uses best-effort extraction: successful pages continue through the pipeline, failed pages return a clear fetch/extraction error.
-- The task history page supports filtering by trigger channel, source type, and status.
-- Failed tasks can be rerun individually, and selected tasks can be rerun in batch.
-- Task history is stored separately from runtime config in `task-history.jsonl`.
-
-## High-Risk / Unsupported Sites
-
-- Directly unsupported:
-  - `zhihu.com`
-- Known high-risk, not guaranteed to work:
-  - `post.smzdm.com`
-- High-risk categories include:
-  - strong anti-bot / WAF protection
-  - pages that require client-side rendering to reveal article content
-  - login-gated article pages
-  - community / Q&A / feed-style sites
-  - short-card or snippet-heavy pages
-
-## Task History
-
-- `/tasks` provides a dedicated task history page.
-- Each record shows:
-  - trigger time
-  - trigger channel (`web`, `telegram`, `feishu`)
-  - source type (`wechat`, `web`)
-  - note title
-  - source URL
-  - execution status
-- Failed tasks can be rerun directly.
-- Selected tasks can be rerun in batch without resending the original links.
-
-## AI Polish
-
-- Built-in AI workflow is optional and disabled by default.
-- Supported provider types:
-  - `OpenAI Compatible`
-  - `Anthropic`
-  - `Gemini`
-  - `Ollama`
-  - `OpenRouter`
-- Built-in providers are read-only presets; you can also add custom providers.
-- Multiple models can be configured and one current model is selected for execution.
-- `Test AI Connectivity` validates the currently selected model/provider pair without running a full article conversion.
-- Interpreter-related settings include:
-  - context template
-  - prompt template
-  - frontmatter template
-  - body template
-  - optional extra body block generation
-  - optional full body polish output (`content_polished`)
-
-## Settings UI
-
-- `/settings` provides a server-backed admin settings page.
-- The settings page includes overview cards, FNS connection detection, image mode selection, and inline form validation hints.
-- FNS config can be imported from clipboard or pasted JSON in this format:
-  - `api`
-  - `apiToken`
-  - `vault`
-- Clipboard import only fills the form. Settings are not persisted until you click save.
-- Secret fields are masked on reload and never returned in plaintext from the settings API.
-- S3 image settings are entered manually in the settings page. There is no Obsidian plugin or R2 config file dependency.
-- The AI section now separates:
-  - current model selection
-  - provider management
-  - model pool management
-  - interpreter template configuration
-- Single conversion clears the article URL field after success.
-- Batch creation clears the textarea and uploaded file selection after success.
-
-## Bot Integrations
-
-- Telegram Bot webhook is supported for single-article conversion.
-- Feishu Bot webhook is supported for single-article conversion.
-- Both bot flows:
-  - accept one link per message
-  - support WeChat links and generic web links
-  - immediately acknowledge receipt
-  - run conversion asynchronously
-  - send a completion reply with title, sync path, and image mode
-- Feishu v1 currently supports:
-  - private chat only
-  - `open_id` whitelist (can be left empty during bootstrap)
-  - developer-server webhook mode
-- If Feishu message sending fails due to missing app permissions, the webhook request is still accepted and the failure is logged instead of crashing the webhook handler.
-
-## Reset Admin Password
-
-If `.env` has changed but an existing `runtime-config.json` already contains an admin password hash, use the offline reset command instead of expecting `.env` to overwrite it automatically.
-
-Python CLI:
-
-```powershell
-python -m app.cli.reset_admin_password --password "new-secret"
-python -m app.cli.reset_admin_password --random
-python -m app.cli.reset_admin_password --username admin --password "new-secret"
+```bash
+docker build -t wechat-md-server .
+docker run -d \
+  --name wechat-md-server \
+  --restart unless-stopped \
+  -p 8765:8765 \
+  --env-file .env \
+  -v "$(pwd)/data:/app/data" \
+  wechat-md-server
 ```
 
-PowerShell wrapper:
+## 快速使用教程
 
-```powershell
-.\scripts\reset-admin-password.ps1 -Password "new-secret"
-.\scripts\reset-admin-password.ps1 -Random
-```
+### 第一步：登录后台
 
-Notes:
+打开 `http://127.0.0.1:8765/login`，使用 `.env` 中设置的管理员账号登录。
 
-- The command requires the correct `WECHAT_MD_APP_MASTER_KEY`.
-- Resetting the password also rotates `session_secret`, so existing login sessions are invalidated.
-- The command only updates admin credentials. It does not change FNS or S3 settings.
+### 第二步：配置 Fast Note Sync
 
-## VPS Deployment
+进入“设置”页面，填写 Fast Note Sync 相关信息：
 
-Recommended layout:
+- FNS 服务地址
+- API Token
+- Vault 名称
+- 目标目录
+
+默认目标目录为：
 
 ```text
-/opt/wechat-md-server/
-├── .env
-├── data/
-│   ├── runtime-config.json
-│   ├── workdir/
-│   └── workdir-output/
-├── docker-compose.yml
-└── deploy/systemd/wechat-md-server.service.example
+00_Inbox/微信公众号
 ```
 
-Recommended deployment steps:
+如果这一步没有配置完成，Markdown 虽然可以生成，但无法稳定同步到你的 Obsidian 仓库。
 
-1. Copy `.env.example` to `.env` and set a strong `WECHAT_MD_APP_MASTER_KEY`.
-2. Set `WECHAT_MD_SESSION_COOKIE_SECURE=true`.
-3. Create the host `data/` directory if needed.
-4. Edit `docker-compose.prod.yml` and replace the placeholder runtime secrets.
-5. Run `docker compose -f docker-compose.prod.yml pull` and `docker compose -f docker-compose.prod.yml up -d`.
-6. The production compose file still publishes `8765` directly, so you can access it with `http://<server-ip>:8765` if needed.
-7. If you later want reverse proxy only, change the port binding back to loopback and place Nginx or Caddy in front.
-8. If you prefer a non-container deployment, the systemd sample in [wechat-md-server.service.example](/path/to/wechat-md-server/deploy/systemd/wechat-md-server.service.example) remains available.
+### 第三步：选择图片处理模式
 
-Recommended reverse-proxy boundary:
+在设置页选择图片模式：
 
-- Expose only the web service entrypoint.
-- The app can listen on `0.0.0.0`; restrict exposure at the host firewall or proxy layer as needed.
-- Let the reverse proxy terminate HTTPS.
-- Prefer adding HSTS and host restrictions at the proxy layer.
+- `wechat_hotlink`：部署简单，适合先跑通流程
+- `s3_hotlink`：适合追求图片长期可控和可迁移
 
-## Backup And Restore
+### 第四步：开始转换
 
-Back up:
+回到首页后可以：
 
-- `data/runtime-config.json`
-- `data/workdir/` if you intentionally keep successful temp artifacts
-- the `.env` file or at least `WECHAT_MD_APP_MASTER_KEY`
+- 粘贴单篇链接直接转换
+- 批量粘贴多个链接
+- 上传文本文件批量导入链接
 
-Restore:
+转换成功后，文章会按照当前配置同步到 Obsidian 对应目录。
 
-1. Restore project files and install dependencies.
-2. Restore `runtime-config.json`.
-3. Restore the exact same `WECHAT_MD_APP_MASTER_KEY`.
-4. Start the service.
+### 第五步：查看任务结果
 
-If the master key changes, encrypted runtime secrets can no longer be decrypted.
+在任务历史页面可以查看：
 
-## Development Notes
+- 当前任务状态
+- 来源类型
+- 触发方式
+- 标题和原始链接
+- 失败任务的重跑入口
 
-- Do not commit integration output directories such as `_integration_output/` or `_integration_output_v2/`.
-- Do not commit `.env` or `data/runtime-config.json`.
-- Use [start-server.ps1](/path/to/wechat-md-server/scripts/start-server.ps1) for local Windows startup if you want a fixed command entrypoint.
+## 支持的能力
 
-## Next Version Plan
+### 微信公众号文章
 
-V3 is considered feature-complete for everyday use. The next iteration is expected to focus on operational polish rather than core article conversion features.
+适合作为主要输入源，转换后可直接沉淀为 Markdown 笔记。
 
-Current candidates:
+### 普通网页文章
 
-- Feishu encrypted event payload support
-  - the current Feishu webhook flow works when `Encrypt Key` is cleared in the Feishu console
-  - long-term production use would benefit from full Feishu encrypted event decryption support
-- Feishu integration and troubleshooting guide
-  - document the exact event subscription setup, required permissions, whitelist bootstrap flow, and log-based debugging path
-- Better bot reply UX
-  - Telegram and Feishu currently use plain-text replies
-  - richer structured replies are optional future polish, not a blocker
+也支持普通网页长文提取。对于正文结构清晰的文章页，通常可以直接转换；对于强反爬、强前端渲染或登录后可见页面，成功率会下降。
 
-Recommended next step:
+### AI 润色
 
-- run V3 in production for a while
-- collect real usage feedback
-- then decide whether to prioritize Feishu encrypted webhook support or more detailed operations documentation
+项目内置可选 AI 工作流，默认关闭。配置完成后可以生成：
+
+- `summary`
+- `tags`
+- `frontmatter`
+- `body_polish`
+- `content_polished`
+
+当前支持的 Provider 类型包括：
+
+- OpenAI Compatible
+- Anthropic
+- Gemini
+- Ollama
+- OpenRouter
+
+### Bot 接入
+
+项目支持：
+
+- Telegram Bot
+- 飞书 Bot
+
+典型流程为：发送链接 -> 服务异步转换 -> Bot 回执结果。
+
+## 目录结构
+
+```text
+.
+├── app/
+│   ├── api/
+│   ├── cli/
+│   ├── core/
+│   ├── web/
+│   ├── config.py
+│   ├── services.py
+│   └── main.py
+├── docs/
+├── scripts/
+├── tests/
+├── Dockerfile
+├── requirements.txt
+└── README.md
+```
+
+## 常用命令
+
+运行测试：
+
+```bash
+pytest
+```
+
+重置管理员密码：
+
+```bash
+python -m app.cli.reset_admin_password --password "new-secret"
+python -m app.cli.reset_admin_password --random
+```
+
+## 使用说明与声明
+
+- 本项目主要用于个人学习、技术研究和工作流实践
+- 请仅在合法、合规、尊重版权的前提下使用
+- 通过本项目获取和保存的文章内容，其版权归原作者或原权利人所有
+- 如果你将本项目用于生产或公开服务，需要自行评估目标站点的服务条款、版权要求和合规风险
+
+## 开源协议
+
+本项目采用 MIT License 开源。

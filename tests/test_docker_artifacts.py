@@ -25,7 +25,9 @@ class DockerArtifactsTests(unittest.TestCase):
         compose = (PROJECT_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
 
         self.assertIn("wechat-md-server:", compose)
-        self.assertIn('image: your-namespace/wechat-md-server:latest', compose)
+        self.assertIn("build:", compose)
+        self.assertIn("context: .", compose)
+        self.assertIn("image: wechat-md-server:latest", compose)
         self.assertIn('user: "0:0"', compose)
         self.assertIn("environment:", compose)
         self.assertIn("WECHAT_MD_APP_MASTER_KEY:", compose)
@@ -36,7 +38,9 @@ class DockerArtifactsTests(unittest.TestCase):
         compose = (PROJECT_ROOT / "docker-compose.prod.yml").read_text(encoding="utf-8")
 
         self.assertIn("wechat-md-server:", compose)
-        self.assertIn('image: your-namespace/wechat-md-server:latest', compose)
+        self.assertIn("build:", compose)
+        self.assertIn("context: .", compose)
+        self.assertIn("image: wechat-md-server:latest", compose)
         self.assertIn("environment:", compose)
         self.assertIn("WECHAT_MD_APP_MASTER_KEY:", compose)
         self.assertIn("WECHAT_MD_ADMIN_USERNAME:", compose)

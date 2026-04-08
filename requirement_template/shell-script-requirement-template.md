@@ -105,7 +105,7 @@
 
 ## 11. 备注
 
-- compose 内容固定使用 `your-namespace/wechat-md-server:latest`
+- compose 内容固定使用 `wechat-md-server:latest`
 - 端口固定 `8765`
 - 凭据直接写入 `/opt/wechat-md-ob/docker-compose.yml`
 - 当前阶段不引入 `.env`、Nginx、HTTPS、systemd 封装
