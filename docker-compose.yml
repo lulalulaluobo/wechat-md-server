@@ -1,8 +1,6 @@
 services:
   wechat-md-server:
-    build:
-      context: .
-    image: wechat-md-server:latest
+    image: lulalulaluobo/wechat-md-server:1.0.0
     container_name: wechat-md-server
     user: "0:0"
     restart: unless-stopped
@@ -10,7 +8,7 @@ services:
       WECHAT_MD_APP_MASTER_KEY: "replace-with-your-master-key"
       WECHAT_MD_ADMIN_USERNAME: "admin"
       WECHAT_MD_ADMIN_PASSWORD: "replace-with-your-admin-password"
-      WECHAT_MD_SESSION_COOKIE_SECURE: "true"
+      WECHAT_MD_SESSION_COOKIE_SECURE: "false"
       WECHAT_MD_RUNTIME_CONFIG_PATH: /app/data/runtime-config.json
       WECHAT_MD_DEFAULT_OUTPUT_DIR: /app/data/workdir-output
     ports:

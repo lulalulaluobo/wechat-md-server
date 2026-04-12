@@ -94,20 +94,38 @@ uvicorn app.main:app --host 0.0.0.0 --port 8765
 
 - `http://127.0.0.1:8765/login`
 
-### 3. Docker 启动
+### 3. Docker Compose 启动（推荐）
 
-如果你想用容器运行：
+**方式一：直接使用项目内的 compose 文件**
+
+修改 `docker-compose.yml` 中的环境变量后启动：
 
 ```bash
-docker build -t wechat-md-server .
-docker run -d \
-  --name wechat-md-server \
-  --restart unless-stopped \
-  -p 8765:8765 \
-  --env-file .env \
-  -v "$(pwd)/data:/app/data" \
-  wechat-md-server
+docker compose up -d
 ```
+
+**方式二：一键脚本部署（适合服务器生产环境）**
+
+> 仅支持 Debian / Ubuntu，需要 root 权限。脚本会自动安装 Docker 并生成随机密钥。
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lulalulaluobo/wechat-md-server/main/deploy/install.sh | sudo bash -s -- install
+```
+
+脚本支持以下子命令：
+
+```bash
+sudo ./install.sh install    # 首次安装
+sudo ./install.sh update     # 更新镜像（保留数据）
+sudo ./install.sh status     # 查看服务状态
+sudo ./install.sh logs       # 实时查看日志
+sudo ./install.sh restart    # 重启服务
+sudo ./install.sh uninstall  # 卸载（可选保留数据）
+```
+
+启动后访问：
+
+- `http://服务器IP:8765/login`
 
 ## 快速使用教程
 
@@ -208,10 +226,13 @@ docker run -d \
 │   ├── config.py
 │   ├── services.py
 │   └── main.py
+├── deploy/
+│   └── install.sh          # 一键安装脚本（Debian/Ubuntu）
 ├── docs/
 ├── scripts/
 ├── tests/
 ├── Dockerfile
+├── docker-compose.yml
 ├── requirements.txt
 └── README.md
 ```
