@@ -587,9 +587,21 @@ class SyncStore:
                         article[key] = int(existing[key])
                 article["cache_hit_count"] = max(int(existing["cache_hit_count"] or 0), int(article["cache_hit_count"]))
             connection.execute(
-                f"""
-                INSERT INTO articles ({", ".join(columns)})
-                VALUES ({", ".join("?" for _ in columns)})
+                """
+                INSERT INTO articles (
+                    id, article_url, source_type, account_fakeid, account_name, title, author, digest, cover,
+                    publish_time, create_time, content_kind, fetch_status, process_status, is_ingested,
+                    cleaned_at, ingested_at, last_task_id, last_error, comment_id, cache_key, cache_hit_count,
+                    raw_html_path, normalized_json_path, latest_markdown_path, last_sync_run_id, content_hash,
+                    created_at, updated_at
+                )
+                VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?,
+                    ?, ?
+                )
                 ON CONFLICT(article_url) DO UPDATE SET
                     source_type = excluded.source_type,
                     account_fakeid = excluded.account_fakeid,
@@ -618,7 +630,16 @@ class SyncStore:
                     content_hash = excluded.content_hash,
                     updated_at = excluded.updated_at
                 """,
-                tuple(article[column] for column in columns),
+                (
+                    article["id"], article["article_url"], article["source_type"], article["account_fakeid"],
+                    article["account_name"], article["title"], article["author"], article["digest"], article["cover"],
+                    article["publish_time"], article["create_time"], article["content_kind"], article["fetch_status"],
+                    article["process_status"], article["is_ingested"], article["cleaned_at"], article["ingested_at"],
+                    article["last_task_id"], article["last_error"], article["comment_id"], article["cache_key"],
+                    article["cache_hit_count"], article["raw_html_path"], article["normalized_json_path"],
+                    article["latest_markdown_path"], article["last_sync_run_id"], article["content_hash"],
+                    article["created_at"], article["updated_at"]
+                ),
             )
             row = connection.execute("SELECT * FROM articles WHERE article_url = ?", (article_url,)).fetchone()
         return (_to_dict(row) or article, is_new)

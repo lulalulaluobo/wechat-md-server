@@ -28,9 +28,9 @@ BROWSER_HEADERS = {
 
 def detect_source_type(url: str) -> str:
     host = _extract_host(url)
-    if "mp.weixin.qq.com" in host or "weixin.qq.com" in host:
+    if host == "mp.weixin.qq.com" or host == "weixin.qq.com" or host.endswith(".weixin.qq.com"):
         return "wechat"
-    if host.endswith("zhihu.com") or "zhihu.com" in host:
+    if host == "zhihu.com" or host.endswith(".zhihu.com"):
         raise ValueError("知乎链接暂不支持，请改用公众号或普通网页链接")
     if host:
         return "web"
