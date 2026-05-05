@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,16 @@ IMAGE_MODE_VALUES = {"wechat_hotlink", "s3_hotlink"}
 DEFAULT_TELEGRAM_NOTIFY_ON_COMPLETE = True
 DEFAULT_FEISHU_NOTIFY_ON_COMPLETE = True
 FEISHU_WEBHOOK_PATH = "/api/integrations/feishu/webhook"
+DEPLOYMENT_MODE_VALUES = {"vps", "nas", "local"}
+TELEGRAM_RECEIVE_MODE_VALUES = {"webhook", "polling"}
+FEISHU_RECEIVE_MODE_VALUES = {"webhook", "long_connection"}
+DEFAULT_DEPLOYMENT_MODE = "vps"
+DEFAULT_TELEGRAM_RECEIVE_MODE = "webhook"
+DEFAULT_FEISHU_RECEIVE_MODE = "webhook"
+DEFAULT_TELEGRAM_POLL_INTERVAL_SECONDS = 2
+SETTINGS_EXPORT_APP = "wechat-md-server"
+SETTINGS_EXPORT_SCHEMA_VERSION = 1
+REDACTED_SECRET_VALUE = "__REDACTED__"
 DEFAULT_AI_MODEL = "gpt-5.4-mini"
 DEFAULT_AI_PROMPT_TEMPLATE = """你是一个 Obsidian 笔记解释器。请基于提供的标题、作者、原文链接和清洗后的 Markdown 正文，提炼结构化笔记变量。
 
@@ -120,6 +131,15 @@ BUILTIN_AI_PROVIDER_DEFINITIONS = (
         "base_url": "https://openrouter.ai/api/v1",
         "api_key": "",
     },
+    {
+        "id": "deepseek-default",
+        "type": "openai_compatible",
+        "display_name": "DeepSeek",
+        "built_in": True,
+        "enabled": True,
+        "base_url": "https://api.deepseek.com",
+        "api_key": "",
+    },
 )
 
 
@@ -187,6 +207,10 @@ class Settings:
     ai_template_source: str = "manual"
     wechat_mp_token: str | None = None
     wechat_mp_cookie: str | None = None
+    deployment_mode: str = DEFAULT_DEPLOYMENT_MODE
+    telegram_receive_mode: str = DEFAULT_TELEGRAM_RECEIVE_MODE
+    telegram_poll_interval: int = DEFAULT_TELEGRAM_POLL_INTERVAL_SECONDS
+    feishu_receive_mode: str = DEFAULT_FEISHU_RECEIVE_MODE
 
     @property
     def fns_enabled(self) -> bool:
@@ -209,13 +233,11 @@ class Settings:
 
     @property
     def telegram_enabled_and_configured(self) -> bool:
-        return bool(
-            self.telegram_enabled
-            and self.telegram_bot_token
-            and self.telegram_webhook_public_base_url
-            and self.telegram_webhook_secret
-            and self.telegram_allowed_chat_ids
-        )
+        if not self.telegram_enabled or not self.telegram_bot_token or not self.telegram_allowed_chat_ids:
+            return False
+        if self.telegram_receive_mode == "polling":
+            return True
+        return bool(self.telegram_webhook_public_base_url and self.telegram_webhook_secret)
 
     @property
     def telegram_webhook_url(self) -> str | None:
@@ -225,13 +247,11 @@ class Settings:
 
     @property
     def feishu_enabled_and_configured(self) -> bool:
-        return bool(
-            self.feishu_enabled
-            and self.feishu_app_id
-            and self.feishu_app_secret
-            and self.feishu_verification_token
-            and self.feishu_webhook_public_base_url
-        )
+        if not self.feishu_enabled or not self.feishu_app_id or not self.feishu_app_secret:
+            return False
+        if self.feishu_receive_mode == "long_connection":
+            return True
+        return bool(self.feishu_verification_token and self.feishu_webhook_public_base_url)
 
     @property
     def feishu_webhook_url(self) -> str | None:
@@ -323,6 +343,57 @@ LEGACY_AI_TEXT_FIELDS = {"ai_base_url", "ai_model"}
 LEGACY_AI_SECRET_FIELDS = {"ai_api_key"}
 AI_REGISTRY_FIELDS = {"ai_providers", "ai_models", "ai_selected_model_id"}
 SECRET_FIELDS = SECRET_FIELDS | LEGACY_AI_SECRET_FIELDS
+SETTINGS_EXPORT_ALLOWED_FIELDS = (
+    {
+        "single_conversion_isolation_enabled",
+        "single_conversion_hard_timeout_seconds",
+        "image_mode",
+        "telegram_allowed_chat_ids",
+        "telegram_image_mode",
+        "telegram_receive_mode",
+        "telegram_poll_interval",
+        "feishu_allowed_open_ids",
+        "feishu_image_mode",
+        "feishu_receive_mode",
+    }
+    | FNS_FIELDS
+    | IMAGE_STORAGE_TEXT_FIELDS
+    | TELEGRAM_BOOL_FIELDS
+    | TELEGRAM_TEXT_FIELDS
+    | TELEGRAM_SECRET_FIELDS
+    | FEISHU_BOOL_FIELDS
+    | FEISHU_TEXT_FIELDS
+    | FEISHU_SECRET_FIELDS
+    | AI_BOOL_FIELDS
+    | AI_TEXT_FIELDS
+    | AI_REGISTRY_FIELDS
+)
+SETTINGS_EXPORT_SECRET_FIELDS = {
+    "fns_token",
+    "image_storage_secret_access_key",
+    "telegram_bot_token",
+    "telegram_webhook_secret",
+    "feishu_app_secret",
+    "feishu_verification_token",
+    "feishu_encrypt_key",
+}
+SETTINGS_EXPORT_FIELD_GROUPS = {
+    "single_conversion_isolation_enabled": "behavior",
+    "single_conversion_hard_timeout_seconds": "behavior",
+    "image_mode": "image",
+    "telegram_allowed_chat_ids": "telegram",
+    "telegram_image_mode": "telegram",
+    "telegram_receive_mode": "telegram",
+    "telegram_poll_interval": "telegram",
+    "feishu_allowed_open_ids": "feishu",
+    "feishu_image_mode": "feishu",
+    "feishu_receive_mode": "feishu",
+}
+SETTINGS_EXPORT_FIELD_GROUPS.update({field: "fns" for field in FNS_FIELDS})
+SETTINGS_EXPORT_FIELD_GROUPS.update({field: "image" for field in IMAGE_STORAGE_TEXT_FIELDS})
+SETTINGS_EXPORT_FIELD_GROUPS.update({field: "telegram" for field in TELEGRAM_BOOL_FIELDS | TELEGRAM_TEXT_FIELDS | TELEGRAM_SECRET_FIELDS})
+SETTINGS_EXPORT_FIELD_GROUPS.update({field: "feishu" for field in FEISHU_BOOL_FIELDS | FEISHU_TEXT_FIELDS | FEISHU_SECRET_FIELDS})
+SETTINGS_EXPORT_FIELD_GROUPS.update({field: "ai" for field in AI_BOOL_FIELDS | AI_TEXT_FIELDS | AI_REGISTRY_FIELDS})
 
 
 def get_runtime_config_path() -> Path:
@@ -360,6 +431,9 @@ def save_runtime_config(payload: dict[str, Any], clear_fields: list[str] | None 
     feishu_settings = dict(user_settings["feishu"])
     wechat_mp_settings = dict(user_settings.get("wechat_mp") or {})
     clear_set = {field for field in (clear_fields or []) if field in SECRET_FIELDS}
+
+    if "deployment_mode" in payload and payload.get("deployment_mode") is not None:
+        user_settings["deployment_mode"] = _normalize_deployment_mode(payload.get("deployment_mode"))
 
     for field in clear_set:
         if field == "fns_token":
@@ -456,6 +530,14 @@ def save_runtime_config(payload: dict[str, Any], clear_fields: list[str] | None 
 
     if "telegram_image_mode" in payload:
         telegram_settings["image_mode"] = _normalize_entry_image_mode(payload.get("telegram_image_mode"))
+    if "telegram_receive_mode" in payload:
+        telegram_settings["receive_mode"] = _normalize_telegram_receive_mode(payload.get("telegram_receive_mode"))
+    if "telegram_poll_interval" in payload:
+        telegram_settings["poll_interval"] = _as_int(
+            payload.get("telegram_poll_interval"),
+            default=DEFAULT_TELEGRAM_POLL_INTERVAL_SECONDS,
+            minimum=1,
+        )
 
     for field in FEISHU_BOOL_FIELDS:
         if field not in payload:
@@ -486,6 +568,8 @@ def save_runtime_config(payload: dict[str, Any], clear_fields: list[str] | None 
 
     if "feishu_image_mode" in payload:
         feishu_settings["image_mode"] = _normalize_entry_image_mode(payload.get("feishu_image_mode"))
+    if "feishu_receive_mode" in payload:
+        feishu_settings["receive_mode"] = _normalize_feishu_receive_mode(payload.get("feishu_receive_mode"))
 
     if "wechat_mp_token" in payload and payload.get("wechat_mp_token") is not None:
         wechat_mp_settings["token"] = str(payload.get("wechat_mp_token") or "").strip()
@@ -567,6 +651,184 @@ def save_runtime_config(payload: dict[str, Any], clear_fields: list[str] | None 
     _validate_runtime_config(updated)
     _write_runtime_config(config_path, updated)
     return updated
+
+
+def build_settings_export_package(*, include_secrets: bool = False) -> dict[str, Any]:
+    settings = get_settings()
+    payload = _build_settings_export_payload(settings)
+    redacted_fields: list[str] = []
+    if not include_secrets:
+        for field in SETTINGS_EXPORT_SECRET_FIELDS:
+            if str(payload.get(field) or "").strip():
+                payload[field] = REDACTED_SECRET_VALUE
+                redacted_fields.append(f"settings.{field}")
+        for index, provider in enumerate(payload.get("ai_providers") or []):
+            if isinstance(provider, dict) and str(provider.get("api_key") or "").strip():
+                provider["api_key"] = REDACTED_SECRET_VALUE
+                redacted_fields.append(f"settings.ai_providers[{index}].api_key")
+    return {
+        "schema_version": SETTINGS_EXPORT_SCHEMA_VERSION,
+        "app": SETTINGS_EXPORT_APP,
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "include_secrets": bool(include_secrets),
+        "settings": payload,
+        "redacted_fields": sorted(redacted_fields),
+    }
+
+
+def preview_settings_import_package(package: dict[str, Any]) -> dict[str, Any]:
+    settings_payload, invalid_fields, redacted_fields, includes_secrets = _validate_settings_import_package(package)
+    changed_groups = sorted(
+        {
+            SETTINGS_EXPORT_FIELD_GROUPS.get(field, "other")
+            for field in settings_payload.keys()
+            if field in SETTINGS_EXPORT_ALLOWED_FIELDS
+        }
+    )
+    return {
+        "status": "valid",
+        "schema_version": SETTINGS_EXPORT_SCHEMA_VERSION,
+        "app": SETTINGS_EXPORT_APP,
+        "changed_groups": changed_groups,
+        "invalid_fields": invalid_fields,
+        "redacted_fields": redacted_fields,
+        "includes_secrets": includes_secrets,
+        "accepted_count": len([field for field in settings_payload.keys() if field in SETTINGS_EXPORT_ALLOWED_FIELDS]),
+    }
+
+
+def import_settings_package(package: dict[str, Any]) -> dict[str, Any]:
+    settings_payload, invalid_fields, redacted_fields, includes_secrets = _validate_settings_import_package(package)
+    payload = _build_runtime_payload_from_import(settings_payload)
+    save_runtime_config(payload)
+    preview = {
+        "status": "valid",
+        "schema_version": SETTINGS_EXPORT_SCHEMA_VERSION,
+        "app": SETTINGS_EXPORT_APP,
+        "changed_groups": sorted({SETTINGS_EXPORT_FIELD_GROUPS.get(field, "other") for field in payload.keys()}),
+        "invalid_fields": invalid_fields,
+        "redacted_fields": redacted_fields,
+        "includes_secrets": includes_secrets,
+        "accepted_count": len(payload),
+    }
+    return {
+        "status": "success",
+        "preview": preview,
+        "settings": build_admin_settings_payload(),
+    }
+
+
+def _build_settings_export_payload(settings: Settings) -> dict[str, Any]:
+    return {
+        "fns_base_url": settings.fns_base_url or "",
+        "fns_token": settings.fns_token or "",
+        "fns_vault": settings.fns_vault or "",
+        "fns_target_dir": settings.fns_target_dir or DEFAULT_FNS_TARGET_DIR,
+        "cleanup_temp_on_success": settings.cleanup_temp_on_success,
+        "single_conversion_isolation_enabled": settings.single_conversion_isolation_enabled,
+        "single_conversion_hard_timeout_seconds": settings.single_conversion_hard_timeout_seconds,
+        "image_mode": settings.image_mode,
+        "image_storage_provider": settings.image_storage_provider or "s3",
+        "image_storage_endpoint": settings.image_storage_endpoint or "",
+        "image_storage_region": settings.image_storage_region or "",
+        "image_storage_bucket": settings.image_storage_bucket or "",
+        "image_storage_access_key_id": settings.image_storage_access_key_id or "",
+        "image_storage_secret_access_key": settings.image_storage_secret_access_key or "",
+        "image_storage_path_template": settings.image_storage_path_template or "",
+        "image_storage_public_base_url": settings.image_storage_public_base_url or "",
+        "telegram_enabled": settings.telegram_enabled,
+        "telegram_bot_token": settings.telegram_bot_token or "",
+        "telegram_webhook_secret": settings.telegram_webhook_secret or "",
+        "telegram_webhook_public_base_url": settings.telegram_webhook_public_base_url or "",
+        "telegram_allowed_chat_ids": "\n".join(settings.telegram_allowed_chat_ids),
+        "telegram_notify_on_complete": settings.telegram_notify_on_complete,
+        "telegram_image_mode": settings.telegram_image_mode or "",
+        "telegram_receive_mode": settings.telegram_receive_mode,
+        "telegram_poll_interval": settings.telegram_poll_interval,
+        "feishu_enabled": settings.feishu_enabled,
+        "feishu_app_id": settings.feishu_app_id or "",
+        "feishu_app_secret": settings.feishu_app_secret or "",
+        "feishu_verification_token": settings.feishu_verification_token or "",
+        "feishu_encrypt_key": settings.feishu_encrypt_key or "",
+        "feishu_webhook_public_base_url": settings.feishu_webhook_public_base_url or "",
+        "feishu_allowed_open_ids": "\n".join(settings.feishu_allowed_open_ids),
+        "feishu_notify_on_complete": settings.feishu_notify_on_complete,
+        "feishu_image_mode": settings.feishu_image_mode or "",
+        "feishu_receive_mode": settings.feishu_receive_mode,
+        "ai_enabled": settings.ai_enabled,
+        "ai_allow_body_polish": settings.ai_allow_body_polish,
+        "ai_enable_content_polish": settings.ai_enable_content_polish,
+        "ai_providers": [dict(provider) for provider in settings.ai_providers],
+        "ai_models": [dict(model) for model in settings.ai_models],
+        "ai_selected_model_id": settings.ai_selected_model_id,
+        "ai_prompt_template": settings.ai_prompt_template,
+        "ai_frontmatter_template": settings.ai_frontmatter_template,
+        "ai_body_template": settings.ai_body_template,
+        "ai_context_template": settings.ai_context_template,
+        "ai_content_polish_prompt": settings.ai_content_polish_prompt,
+        "ai_template_source": settings.ai_template_source,
+    }
+
+
+def _validate_settings_import_package(package: dict[str, Any]) -> tuple[dict[str, Any], list[str], list[str], bool]:
+    if not isinstance(package, dict):
+        raise ValueError("配置包必须是 JSON 对象")
+    if int(package.get("schema_version") or 0) != SETTINGS_EXPORT_SCHEMA_VERSION:
+        raise ValueError(f"配置包 schema_version 必须是 {SETTINGS_EXPORT_SCHEMA_VERSION}")
+    if str(package.get("app") or "").strip() != SETTINGS_EXPORT_APP:
+        raise ValueError(f"配置包 app 必须是 {SETTINGS_EXPORT_APP}")
+    settings_payload = package.get("settings")
+    if not isinstance(settings_payload, dict):
+        raise ValueError("配置包缺少 settings 对象")
+    invalid_fields = sorted(str(field) for field in settings_payload.keys() if str(field) not in SETTINGS_EXPORT_ALLOWED_FIELDS)
+    redacted_fields = _collect_redacted_import_fields(settings_payload)
+    includes_secrets = _settings_payload_includes_plain_secrets(settings_payload)
+    return dict(settings_payload), invalid_fields, redacted_fields, includes_secrets
+
+
+def _collect_redacted_import_fields(settings_payload: dict[str, Any]) -> list[str]:
+    fields: list[str] = []
+    for field in SETTINGS_EXPORT_SECRET_FIELDS:
+        if settings_payload.get(field) == REDACTED_SECRET_VALUE:
+            fields.append(f"settings.{field}")
+    for index, provider in enumerate(settings_payload.get("ai_providers") or []):
+        if isinstance(provider, dict) and provider.get("api_key") == REDACTED_SECRET_VALUE:
+            fields.append(f"settings.ai_providers[{index}].api_key")
+    return sorted(fields)
+
+
+def _settings_payload_includes_plain_secrets(settings_payload: dict[str, Any]) -> bool:
+    for field in SETTINGS_EXPORT_SECRET_FIELDS:
+        value = settings_payload.get(field)
+        if value not in (None, "", REDACTED_SECRET_VALUE):
+            return True
+    for provider in settings_payload.get("ai_providers") or []:
+        if isinstance(provider, dict):
+            value = provider.get("api_key")
+            if value not in (None, "", REDACTED_SECRET_VALUE):
+                return True
+    return False
+
+
+def _build_runtime_payload_from_import(settings_payload: dict[str, Any]) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    for field, value in settings_payload.items():
+        if field not in SETTINGS_EXPORT_ALLOWED_FIELDS:
+            continue
+        if field in SETTINGS_EXPORT_SECRET_FIELDS and value == REDACTED_SECRET_VALUE:
+            continue
+        if field == "ai_providers" and isinstance(value, list):
+            payload[field] = [
+                {
+                    **provider,
+                    "api_key": "" if provider.get("api_key") == REDACTED_SECRET_VALUE else provider.get("api_key", ""),
+                }
+                for provider in value
+                if isinstance(provider, dict)
+            ]
+            continue
+        payload[field] = value
+    return payload
 
 
 def update_password(current_password: str, new_password: str) -> dict[str, Any]:
@@ -681,6 +943,7 @@ def build_admin_settings_payload() -> dict[str, Any]:
         "runtime_config_path": str(settings.runtime_config_path),
         "auth_enabled": True,
         "session_cookie_secure": settings.session_cookie_secure,
+        "deployment_mode": settings.deployment_mode,
         "default_output_target": "fns" if settings.fns_enabled else "local",
         "current_user": {"username": settings.username},
         "fns_base_url": settings.fns_base_url or "",
@@ -714,6 +977,8 @@ def build_admin_settings_payload() -> dict[str, Any]:
         "telegram_webhook_status": settings.telegram_webhook_status,
         "telegram_webhook_message": settings.telegram_webhook_message,
         "telegram_image_mode": settings.telegram_image_mode or "",
+        "telegram_receive_mode": settings.telegram_receive_mode,
+        "telegram_poll_interval": settings.telegram_poll_interval,
         "feishu_enabled": settings.feishu_enabled,
         "feishu_app_id": settings.feishu_app_id or "",
         "feishu_app_secret_configured": bool(settings.feishu_app_secret),
@@ -729,6 +994,7 @@ def build_admin_settings_payload() -> dict[str, Any]:
         "feishu_webhook_status": settings.feishu_webhook_status,
         "feishu_webhook_message": settings.feishu_webhook_message,
         "feishu_image_mode": settings.feishu_image_mode or "",
+        "feishu_receive_mode": settings.feishu_receive_mode,
         "wechat_mp_configured": settings.wechat_mp_configured,
         "wechat_mp_token_configured": bool(settings.wechat_mp_token),
         "wechat_mp_token_masked": _mask_secret(settings.wechat_mp_token),
@@ -767,6 +1033,7 @@ def get_settings() -> Settings:
 
     default_output_dir = runtime_config_path.parent / "workdir-output"
     output_dir = Path(os.environ.get("WECHAT_MD_DEFAULT_OUTPUT_DIR", str(default_output_dir))).resolve()
+    deployment_mode = _normalize_deployment_mode(runtime_user_settings.get("deployment_mode"))
     fns_base_url = str(
         runtime_user_settings.get("fns_base_url") or os.environ.get("WECHAT_MD_FNS_BASE_URL") or ""
     ).strip() or None
@@ -832,6 +1099,12 @@ def get_settings() -> Settings:
     telegram_webhook_status = str(telegram.get("webhook_status") or "inactive").strip() or "inactive"
     telegram_webhook_message = str(telegram.get("webhook_message") or "").strip()
     telegram_image_mode = str(telegram.get("image_mode") or "").strip() or None
+    telegram_receive_mode = _normalize_telegram_receive_mode(telegram.get("receive_mode"))
+    telegram_poll_interval = _as_int(
+        telegram.get("poll_interval") or os.environ.get("WECHAT_MD_TELEGRAM_POLL_INTERVAL") or os.environ.get("TG_POLL_INTERVAL"),
+        default=DEFAULT_TELEGRAM_POLL_INTERVAL_SECONDS,
+        minimum=1,
+    )
     feishu_enabled = _as_bool(feishu.get("enabled"), default=False)
     feishu_app_id = str(feishu.get("app_id") or os.environ.get("WECHAT_MD_FEISHU_APP_ID") or "").strip() or None
     feishu_app_secret = str(feishu.get("app_secret") or os.environ.get("WECHAT_MD_FEISHU_APP_SECRET") or "").strip() or None
@@ -850,6 +1123,7 @@ def get_settings() -> Settings:
     feishu_webhook_status = str(feishu.get("webhook_status") or "inactive").strip() or "inactive"
     feishu_webhook_message = str(feishu.get("webhook_message") or "").strip()
     feishu_image_mode = str(feishu.get("image_mode") or "").strip() or None
+    feishu_receive_mode = _normalize_feishu_receive_mode(feishu.get("receive_mode"))
     wechat_mp_token = str(wechat_mp.get("token") or os.environ.get("WECHAT_MD_WECHAT_MP_TOKEN") or "").strip() or None
     wechat_mp_cookie = str(wechat_mp.get("cookie") or os.environ.get("WECHAT_MD_WECHAT_MP_COOKIE") or "").strip() or None
     ai_enabled = _as_bool(runtime_user_settings.get("ai_enabled"), default=False)
@@ -873,9 +1147,10 @@ def get_settings() -> Settings:
         default_output_dir=output_dir,
         runtime_config_path=runtime_config_path,
         username=str(user_block.get("username") or "admin"),
-        password_hash=str(user_block.get("password_hash") or hash_password("admin")),
+        password_hash=str(user_block.get("password_hash") or hash_password("admin123")),
         session_secret=str(auth_block.get("session_secret") or generate_session_secret()),
         session_cookie_secure=session_cookie_secure_enabled(),
+        deployment_mode=deployment_mode,
         fns_base_url=fns_base_url.rstrip("/") if fns_base_url else None,
         fns_token=fns_token,
         fns_vault=fns_vault,
@@ -901,6 +1176,8 @@ def get_settings() -> Settings:
         telegram_webhook_status=telegram_webhook_status,
         telegram_webhook_message=telegram_webhook_message,
         telegram_image_mode=telegram_image_mode,
+        telegram_receive_mode=telegram_receive_mode,
+        telegram_poll_interval=telegram_poll_interval,
         feishu_enabled=feishu_enabled,
         feishu_app_id=feishu_app_id,
         feishu_app_secret=feishu_app_secret,
@@ -912,6 +1189,7 @@ def get_settings() -> Settings:
         feishu_webhook_status=feishu_webhook_status,
         feishu_webhook_message=feishu_webhook_message,
         feishu_image_mode=feishu_image_mode,
+        feishu_receive_mode=feishu_receive_mode,
         ai_enabled=ai_enabled,
         ai_providers=tuple(dict(item) for item in ai_registry.get("providers", [])),
         ai_models=tuple(dict(item) for item in ai_registry.get("models", [])),
@@ -979,6 +1257,7 @@ def _normalize_user_settings(raw_settings: Any) -> dict[str, Any]:
     wechat_mp_source = source.get("wechat_mp") if isinstance(source.get("wechat_mp"), dict) else {}
     ai_registry = _normalize_ai_registry(source)
     return {
+        "deployment_mode": _normalize_deployment_mode(source.get("deployment_mode")),
         "fns_base_url": str(source.get("fns_base_url") or "").strip(),
         "fns_token": _load_secret_value(
             encrypted_value=source.get("fns_token_encrypted"),
@@ -1037,6 +1316,14 @@ def _normalize_user_settings(raw_settings: Any) -> dict[str, Any]:
             "webhook_status": str(telegram_source.get("webhook_status") or "inactive").strip() or "inactive",
             "webhook_message": str(telegram_source.get("webhook_message") or "").strip(),
             "image_mode": _normalize_entry_image_mode(telegram_source.get("image_mode")),
+            "receive_mode": _normalize_telegram_receive_mode(telegram_source.get("receive_mode")),
+            "poll_interval": _as_int(
+                telegram_source.get("poll_interval")
+                or os.environ.get("WECHAT_MD_TELEGRAM_POLL_INTERVAL")
+                or os.environ.get("TG_POLL_INTERVAL"),
+                default=DEFAULT_TELEGRAM_POLL_INTERVAL_SECONDS,
+                minimum=1,
+            ),
         },
         "feishu": {
             "enabled": _as_bool(feishu_source.get("enabled"), default=False),
@@ -1062,6 +1349,7 @@ def _normalize_user_settings(raw_settings: Any) -> dict[str, Any]:
             "webhook_status": str(feishu_source.get("webhook_status") or "inactive").strip() or "inactive",
             "webhook_message": str(feishu_source.get("webhook_message") or "").strip(),
             "image_mode": _normalize_entry_image_mode(feishu_source.get("image_mode")),
+            "receive_mode": _normalize_feishu_receive_mode(feishu_source.get("receive_mode")),
         },
         "wechat_mp": {
             "token": _load_secret_value(
@@ -1101,6 +1389,7 @@ def _serialize_runtime_config(data: dict[str, Any]) -> dict[str, Any]:
         },
         "user_settings": {
             "fns_base_url": str(user_settings.get("fns_base_url") or "").strip(),
+            "deployment_mode": _normalize_deployment_mode(user_settings.get("deployment_mode")),
             "fns_token_encrypted": encrypt_secret(str(user_settings.get("fns_token") or "")),
             "fns_vault": str(user_settings.get("fns_vault") or "").strip(),
             "fns_target_dir": str(user_settings.get("fns_target_dir") or DEFAULT_FNS_TARGET_DIR).strip() or DEFAULT_FNS_TARGET_DIR,
@@ -1145,6 +1434,12 @@ def _serialize_runtime_config(data: dict[str, Any]) -> dict[str, Any]:
                 "webhook_status": str(telegram.get("webhook_status") or "inactive").strip() or "inactive",
                 "webhook_message": str(telegram.get("webhook_message") or "").strip(),
                 "image_mode": _normalize_entry_image_mode(telegram.get("image_mode")),
+                "receive_mode": _normalize_telegram_receive_mode(telegram.get("receive_mode")),
+                "poll_interval": _as_int(
+                    telegram.get("poll_interval"),
+                    default=DEFAULT_TELEGRAM_POLL_INTERVAL_SECONDS,
+                    minimum=1,
+                ),
             },
             "feishu": {
                 "enabled": _as_bool(feishu.get("enabled"), default=False),
@@ -1158,6 +1453,7 @@ def _serialize_runtime_config(data: dict[str, Any]) -> dict[str, Any]:
                 "webhook_status": str(feishu.get("webhook_status") or "inactive").strip() or "inactive",
                 "webhook_message": str(feishu.get("webhook_message") or "").strip(),
                 "image_mode": _normalize_entry_image_mode(feishu.get("image_mode")),
+                "receive_mode": _normalize_feishu_receive_mode(feishu.get("receive_mode")),
             },
             "wechat_mp": {
                 "token_encrypted": encrypt_secret(str(wechat_mp.get("token") or "")),
@@ -1196,6 +1492,36 @@ def _normalize_entry_image_mode(value: Any) -> str:
     """Normalize per-entry image mode. Returns empty string for 'follow global'."""
     normalized = str(value or "").strip()
     return normalized if normalized in IMAGE_MODE_VALUES else ""
+
+
+def _normalize_deployment_mode(value: Any) -> str:
+    normalized = str(
+        value
+        or os.environ.get("WECHAT_MD_DEPLOYMENT_MODE")
+        or os.environ.get("DEPLOYMENT_MODE")
+        or DEFAULT_DEPLOYMENT_MODE
+    ).strip()
+    return normalized if normalized in DEPLOYMENT_MODE_VALUES else DEFAULT_DEPLOYMENT_MODE
+
+
+def _normalize_telegram_receive_mode(value: Any) -> str:
+    normalized = str(
+        value
+        or os.environ.get("WECHAT_MD_TELEGRAM_RECEIVE_MODE")
+        or os.environ.get("TG_RECEIVE_MODE")
+        or DEFAULT_TELEGRAM_RECEIVE_MODE
+    ).strip()
+    return normalized if normalized in TELEGRAM_RECEIVE_MODE_VALUES else DEFAULT_TELEGRAM_RECEIVE_MODE
+
+
+def _normalize_feishu_receive_mode(value: Any) -> str:
+    normalized = str(
+        value
+        or os.environ.get("WECHAT_MD_FEISHU_RECEIVE_MODE")
+        or os.environ.get("FEISHU_RECEIVE_MODE")
+        or DEFAULT_FEISHU_RECEIVE_MODE
+    ).strip()
+    return normalized if normalized in FEISHU_RECEIVE_MODE_VALUES else DEFAULT_FEISHU_RECEIVE_MODE
 
 
 def _normalize_ai_template_source(value: Any) -> str:
@@ -1451,6 +1777,9 @@ def _mask_secret(value: str | None) -> str:
 
 def _validate_runtime_config(data: dict[str, Any]) -> None:
     user_settings = data["user_settings"]
+    deployment_mode = _normalize_deployment_mode(user_settings.get("deployment_mode"))
+    if deployment_mode not in DEPLOYMENT_MODE_VALUES:
+        raise ValueError("部署模式仅支持 vps、nas 或 local")
     base_url = str(user_settings.get("fns_base_url") or "").strip()
     if base_url and not base_url.startswith(("http://", "https://")):
         raise ValueError("FNS 基础地址必须以 http:// 或 https:// 开头")
@@ -1487,6 +1816,9 @@ def _validate_runtime_config(data: dict[str, Any]) -> None:
         _validate_ai_provider_runtime_requirements(selected_provider)
 
     telegram = user_settings["telegram"]
+    telegram_receive_mode = _normalize_telegram_receive_mode(telegram.get("receive_mode"))
+    if telegram_receive_mode not in TELEGRAM_RECEIVE_MODE_VALUES:
+        raise ValueError("Telegram 接收模式仅支持 webhook 或 polling")
     telegram_webhook_public_base_url = str(telegram.get("webhook_public_base_url") or "").strip()
     if telegram_webhook_public_base_url and not telegram_webhook_public_base_url.startswith(("http://", "https://")):
         raise ValueError("Telegram Webhook 对外基础地址必须以 http:// 或 https:// 开头")
@@ -1494,16 +1826,20 @@ def _validate_runtime_config(data: dict[str, Any]) -> None:
         missing_telegram = []
         if not str(telegram.get("bot_token") or "").strip():
             missing_telegram.append("bot_token")
-        if not telegram_webhook_public_base_url:
-            missing_telegram.append("webhook_public_base_url")
-        if not str(telegram.get("webhook_secret") or "").strip():
-            missing_telegram.append("webhook_secret")
+        if telegram_receive_mode == "webhook":
+            if not telegram_webhook_public_base_url:
+                missing_telegram.append("webhook_public_base_url")
+            if not str(telegram.get("webhook_secret") or "").strip():
+                missing_telegram.append("webhook_secret")
         if not _normalize_chat_ids(telegram.get("allowed_chat_ids")):
             missing_telegram.append("allowed_chat_ids")
         if missing_telegram:
             raise ValueError("Telegram Bot 配置不完整，缺少字段: " + ", ".join(missing_telegram))
 
     feishu = user_settings["feishu"]
+    feishu_receive_mode = _normalize_feishu_receive_mode(feishu.get("receive_mode"))
+    if feishu_receive_mode not in FEISHU_RECEIVE_MODE_VALUES:
+        raise ValueError("飞书接收模式仅支持 webhook 或 long_connection")
     feishu_webhook_public_base_url = _normalize_feishu_webhook_public_base_url(feishu.get("webhook_public_base_url"))
     if feishu_webhook_public_base_url and not feishu_webhook_public_base_url.startswith(("http://", "https://")):
         raise ValueError("飞书 Webhook 对外基础地址必须以 http:// 或 https:// 开头")
@@ -1513,10 +1849,11 @@ def _validate_runtime_config(data: dict[str, Any]) -> None:
             missing_feishu.append("app_id")
         if not str(feishu.get("app_secret") or "").strip():
             missing_feishu.append("app_secret")
-        if not str(feishu.get("verification_token") or "").strip():
-            missing_feishu.append("verification_token")
-        if not feishu_webhook_public_base_url:
-            missing_feishu.append("webhook_public_base_url")
+        if feishu_receive_mode == "webhook":
+            if not str(feishu.get("verification_token") or "").strip():
+                missing_feishu.append("verification_token")
+            if not feishu_webhook_public_base_url:
+                missing_feishu.append("webhook_public_base_url")
         if missing_feishu:
             raise ValueError("飞书 Bot 配置不完整，缺少字段: " + ", ".join(missing_feishu))
 

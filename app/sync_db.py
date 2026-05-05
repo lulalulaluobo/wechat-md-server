@@ -176,6 +176,11 @@ class SyncStore:
                         article_id TEXT NOT NULL,
                         article_url TEXT NOT NULL,
                         trigger_channel TEXT NOT NULL DEFAULT 'web',
+                        receive_mode TEXT NOT NULL DEFAULT 'web',
+                        bot_sender_id TEXT NOT NULL DEFAULT '',
+                        bot_chat_id TEXT NOT NULL DEFAULT '',
+                        bot_message_id TEXT NOT NULL DEFAULT '',
+                        deployment_mode TEXT NOT NULL DEFAULT 'vps',
                         source_type TEXT NOT NULL DEFAULT 'wechat',
                         status TEXT NOT NULL DEFAULT 'queued',
                         ai_enabled INTEGER NOT NULL DEFAULT 0,
@@ -199,6 +204,40 @@ class SyncStore:
                         ON article_executions(article_id, created_at DESC);
                     CREATE INDEX IF NOT EXISTS idx_article_executions_status
                         ON article_executions(status, source_type, trigger_channel);
+
+                    CREATE TABLE IF NOT EXISTS search_queries (
+                        id TEXT PRIMARY KEY,
+                        query TEXT NOT NULL,
+                        provider TEXT NOT NULL DEFAULT 'sogou_weixin',
+                        limit_count INTEGER NOT NULL DEFAULT 10,
+                        result_count INTEGER NOT NULL DEFAULT 0,
+                        error_message TEXT NOT NULL DEFAULT '',
+                        created_at TEXT NOT NULL
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_search_queries_created
+                        ON search_queries(created_at DESC);
+
+                    CREATE TABLE IF NOT EXISTS search_results (
+                        id TEXT PRIMARY KEY,
+                        search_query_id TEXT NOT NULL,
+                        title TEXT NOT NULL DEFAULT '',
+                        url TEXT NOT NULL,
+                        source_name TEXT NOT NULL DEFAULT '',
+                        published_at TEXT NOT NULL DEFAULT '',
+                        snippet TEXT NOT NULL DEFAULT '',
+                        provider TEXT NOT NULL DEFAULT 'sogou_weixin',
+                        already_ingested INTEGER NOT NULL DEFAULT 0,
+                        score REAL,
+                        created_at TEXT NOT NULL,
+                        FOREIGN KEY(search_query_id) REFERENCES search_queries(id),
+                        UNIQUE(search_query_id, url)
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_search_results_query
+                        ON search_results(search_query_id);
+                    CREATE INDEX IF NOT EXISTS idx_search_results_url
+                        ON search_results(url);
 
                     CREATE TABLE IF NOT EXISTS users (
                         id TEXT PRIMARY KEY,
@@ -273,6 +312,11 @@ class SyncStore:
                     """
                 )
                 _ensure_column(connection, "articles", "last_sync_run_id", "TEXT NOT NULL DEFAULT ''")
+                _ensure_column(connection, "article_executions", "receive_mode", "TEXT NOT NULL DEFAULT 'web'")
+                _ensure_column(connection, "article_executions", "bot_sender_id", "TEXT NOT NULL DEFAULT ''")
+                _ensure_column(connection, "article_executions", "bot_chat_id", "TEXT NOT NULL DEFAULT ''")
+                _ensure_column(connection, "article_executions", "bot_message_id", "TEXT NOT NULL DEFAULT ''")
+                _ensure_column(connection, "article_executions", "deployment_mode", "TEXT NOT NULL DEFAULT 'vps'")
             self._initialized = True
 
     def build_cache_key(self, article_url: str) -> str:
@@ -780,6 +824,11 @@ class SyncStore:
         trigger_channel: str,
         source_type: str,
         status: str = "queued",
+        receive_mode: str = "web",
+        bot_sender_id: str = "",
+        bot_chat_id: str = "",
+        bot_message_id: str = "",
+        deployment_mode: str = "vps",
         ai_enabled: bool = False,
         output_target: str = "fns",
         sync_run_id: str = "",
@@ -798,6 +847,11 @@ class SyncStore:
             "article_id": str(article_id or "").strip(),
             "article_url": str(article_url or "").strip(),
             "trigger_channel": str(trigger_channel or "web").strip() or "web",
+            "receive_mode": str(receive_mode or "web").strip() or "web",
+            "bot_sender_id": str(bot_sender_id or "").strip(),
+            "bot_chat_id": str(bot_chat_id or "").strip(),
+            "bot_message_id": str(bot_message_id or "").strip(),
+            "deployment_mode": str(deployment_mode or "vps").strip() or "vps",
             "source_type": str(source_type or "wechat").strip() or "wechat",
             "status": str(status or "queued").strip() or "queued",
             "ai_enabled": _normalize_bool(ai_enabled),
@@ -819,11 +873,12 @@ class SyncStore:
             connection.execute(
                 """
                 INSERT INTO article_executions (
-                    id, article_id, article_url, trigger_channel, source_type, status, ai_enabled,
+                    id, article_id, article_url, trigger_channel, receive_mode, bot_sender_id,
+                    bot_chat_id, bot_message_id, deployment_mode, source_type, status, ai_enabled,
                     output_target, sync_run_id, ingest_job_id, rerun_of_execution_id, fetch_status,
                     content_kind, note_title, sync_path, error_message, created_at, updated_at,
                     started_at, finished_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 tuple(payload.values()),
             )
@@ -843,6 +898,11 @@ class SyncStore:
             updated["finished_at"] = _utc_now()
         columns = [
             "status",
+            "receive_mode",
+            "bot_sender_id",
+            "bot_chat_id",
+            "bot_message_id",
+            "deployment_mode",
             "ai_enabled",
             "output_target",
             "sync_run_id",
@@ -949,6 +1009,130 @@ class SyncStore:
             "limit": int(limit),
             "offset": int(offset),
         }
+
+    def create_search_query(
+        self,
+        *,
+        query: str,
+        provider: str,
+        limit: int,
+        result_count: int = 0,
+        error_message: str = "",
+    ) -> dict[str, Any]:
+        self.initialize()
+        now = _utc_now()
+        payload = {
+            "id": uuid.uuid4().hex,
+            "query": str(query or "").strip(),
+            "provider": str(provider or "sogou_weixin").strip() or "sogou_weixin",
+            "limit_count": int(limit or 10),
+            "result_count": int(result_count or 0),
+            "error_message": str(error_message or ""),
+            "created_at": now,
+        }
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO search_queries (
+                    id, query, provider, limit_count, result_count, error_message, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                tuple(payload.values()),
+            )
+            row = connection.execute("SELECT * FROM search_queries WHERE id = ?", (payload["id"],)).fetchone()
+        return _to_dict(row) or payload
+
+    def save_search_results(self, search_query_id: str, results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        self.initialize()
+        now = _utc_now()
+        saved: list[dict[str, Any]] = []
+        annotated = self.annotate_search_results(results)
+        with self._connect() as connection:
+            for item in annotated:
+                url = str(item.get("url") or "").strip()
+                if not url:
+                    continue
+                payload = {
+                    "id": uuid.uuid4().hex,
+                    "search_query_id": str(search_query_id or "").strip(),
+                    "title": str(item.get("title") or "").strip(),
+                    "url": url,
+                    "source_name": str(item.get("source_name") or "").strip(),
+                    "published_at": str(item.get("published_at") or "").strip(),
+                    "snippet": str(item.get("snippet") or "").strip(),
+                    "provider": str(item.get("provider") or "sogou_weixin").strip() or "sogou_weixin",
+                    "already_ingested": _normalize_bool(item.get("already_ingested")),
+                    "score": item.get("score"),
+                    "created_at": now,
+                }
+                connection.execute(
+                    """
+                    INSERT INTO search_results (
+                        id, search_query_id, title, url, source_name, published_at, snippet,
+                        provider, already_ingested, score, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(search_query_id, url) DO UPDATE SET
+                        title = excluded.title,
+                        source_name = excluded.source_name,
+                        published_at = excluded.published_at,
+                        snippet = excluded.snippet,
+                        provider = excluded.provider,
+                        already_ingested = excluded.already_ingested,
+                        score = excluded.score
+                    """,
+                    (
+                        payload["id"], payload["search_query_id"], payload["title"], payload["url"],
+                        payload["source_name"], payload["published_at"], payload["snippet"], payload["provider"],
+                        payload["already_ingested"], payload["score"], payload["created_at"]
+                    ),
+                )
+                row = connection.execute(
+                    "SELECT * FROM search_results WHERE search_query_id = ? AND url = ?",
+                    (payload["search_query_id"], payload["url"]),
+                ).fetchone()
+                saved.append(_to_dict(row) or payload)
+        return saved
+
+    def annotate_search_results(self, results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        self.initialize()
+        urls = [str(item.get("url") or "").strip() for item in results if str(item.get("url") or "").strip()]
+        if not urls:
+            return [{**item, "already_ingested": False} for item in results]
+        placeholders = ", ".join("?" for _ in urls)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"SELECT article_url FROM articles WHERE article_url IN ({placeholders}) AND is_ingested = 1",
+                tuple(urls),
+            ).fetchall()
+        ingested_urls = {str(row["article_url"]) for row in rows}
+        return [
+            {
+                **item,
+                "already_ingested": str(item.get("url") or "").strip() in ingested_urls,
+            }
+            for item in results
+        ]
+
+    def list_search_history(self, *, limit: int = 20, offset: int = 0) -> list[dict[str, Any]]:
+        self.initialize()
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM search_queries
+                ORDER BY created_at DESC, id DESC
+                LIMIT ? OFFSET ?
+                """,
+                (max(int(limit or 20), 1), max(int(offset or 0), 0)),
+            ).fetchall()
+        return [_to_dict(row) or {} for row in rows]
+
+    def delete_search_query(self, search_query_id: str) -> bool:
+        self.initialize()
+        normalized_id = str(search_query_id or "").strip()
+        with self._connect() as connection:
+            connection.execute("DELETE FROM search_results WHERE search_query_id = ?", (normalized_id,))
+            cursor = connection.execute("DELETE FROM search_queries WHERE id = ?", (normalized_id,))
+        return int(cursor.rowcount or 0) > 0
 
     def record_artifact(self, article_url: str, artifact_type: str, path: str, *, status: str = "ready") -> dict[str, Any]:
         self.initialize()

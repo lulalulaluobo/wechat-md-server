@@ -12,7 +12,16 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.auth import verify_password  # noqa: E402
-from app.config import get_settings, load_runtime_config, reset_admin_credentials, save_runtime_config  # noqa: E402
+from app.config import (  # noqa: E402
+    REDACTED_SECRET_VALUE,
+    build_settings_export_package,
+    get_settings,
+    import_settings_package,
+    load_runtime_config,
+    preview_settings_import_package,
+    reset_admin_credentials,
+    save_runtime_config,
+)
 
 
 class SettingsTests(unittest.TestCase):
@@ -41,7 +50,7 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(runtime_data["user_settings"]["image_mode"], "wechat_hotlink")
         self.assertIn("image_storage", runtime_data["user_settings"])
 
-    def test_password_hash_is_not_plaintext_admin(self):
+    def test_default_initial_admin_password_is_admin123(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             runtime_path = Path(temp_dir) / "runtime-config.json"
             env = {
@@ -52,9 +61,28 @@ class SettingsTests(unittest.TestCase):
                 runtime_data = load_runtime_config(runtime_path)
 
         password_hash = runtime_data["auth"]["user"]["password_hash"]
-        self.assertNotEqual(password_hash, "admin")
+        self.assertNotEqual(password_hash, "admin123")
         self.assertIn("$", password_hash)
+        self.assertTrue(verify_password("admin123", password_hash))
         self.assertFalse(verify_password("admin", password_hash))
+
+    def test_default_ai_providers_include_deepseek(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runtime_path = Path(temp_dir) / "runtime-config.json"
+            env = {
+                "WECHAT_MD_RUNTIME_CONFIG_PATH": str(runtime_path),
+                "WECHAT_MD_APP_MASTER_KEY": "test-master-key",
+                "WECHAT_MD_ADMIN_PASSWORD": "admin",
+            }
+            with patch.dict(os.environ, env, clear=False):
+                settings = get_settings()
+
+        providers = {provider["id"]: provider for provider in settings.ai_providers}
+        self.assertIn("deepseek-default", providers)
+        self.assertEqual(providers["deepseek-default"]["display_name"], "DeepSeek")
+        self.assertEqual(providers["deepseek-default"]["type"], "openai_compatible")
+        self.assertEqual(providers["deepseek-default"]["base_url"], "https://api.deepseek.com")
+        self.assertTrue(providers["deepseek-default"]["built_in"])
 
     def test_save_runtime_config_persists_s3_image_settings(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -360,6 +388,303 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.username, "rooter")
         self.assertTrue(verify_password("new-secret", settings.password_hash))
         self.assertNotEqual(before["auth"]["session_secret"], updated["auth"]["session_secret"])
+
+    def test_settings_export_package_redacts_secrets_by_default(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runtime_path = Path(temp_dir) / "runtime-config.json"
+            env = {
+                "WECHAT_MD_RUNTIME_CONFIG_PATH": str(runtime_path),
+                "WECHAT_MD_APP_MASTER_KEY": "test-master-key",
+                "WECHAT_MD_ADMIN_PASSWORD": "admin",
+            }
+            with patch.dict(os.environ, env, clear=False):
+                save_runtime_config(
+                    {
+                        "fns_base_url": "https://fns.example.com",
+                        "fns_token": "fns-secret",
+                        "fns_vault": "vault-a",
+                        "image_mode": "s3_hotlink",
+                        "image_storage_endpoint": "https://s3.example.com",
+                        "image_storage_region": "auto",
+                        "image_storage_bucket": "bucket-a",
+                        "image_storage_access_key_id": "key-id",
+                        "image_storage_secret_access_key": "s3-secret",
+                        "image_storage_path_template": "wechat/{filename}",
+                        "image_storage_public_base_url": "https://img.example.com",
+                        "telegram_enabled": True,
+                        "telegram_bot_token": "tg-token",
+                        "telegram_webhook_secret": "tg-secret",
+                        "telegram_receive_mode": "polling",
+                        "telegram_allowed_chat_ids": "123",
+                        "feishu_enabled": True,
+                        "feishu_app_id": "cli_x",
+                        "feishu_app_secret": "fs-secret",
+                        "feishu_verification_token": "fs-token",
+                        "feishu_encrypt_key": "fs-encrypt",
+                        "feishu_receive_mode": "long_connection",
+                        "ai_enabled": True,
+                        "ai_providers": [
+                            {
+                                "id": "openai-compatible-default",
+                                "type": "openai_compatible",
+                                "display_name": "OpenAI Compatible",
+                                "built_in": True,
+                                "enabled": True,
+                                "base_url": "https://api.example.com/v1",
+                                "api_key": "ai-secret",
+                            }
+                        ],
+                        "ai_models": [
+                            {
+                                "id": "model-openai-compatible-default",
+                                "provider_id": "openai-compatible-default",
+                                "display_name": "gpt-5.4-mini",
+                                "model_id": "gpt-5.4-mini",
+                                "enabled": True,
+                            }
+                        ],
+                        "ai_selected_model_id": "model-openai-compatible-default",
+                        "ai_prompt_template": "请总结 {{title}}",
+                    }
+                )
+                package = build_settings_export_package(include_secrets=False)
+
+        serialized = json.dumps(package, ensure_ascii=False)
+        self.assertEqual(package["schema_version"], 1)
+        self.assertEqual(package["app"], "wechat-md-server")
+        self.assertFalse(package["include_secrets"])
+        self.assertNotIn("deployment_mode", package["settings"])
+        self.assertEqual(package["settings"]["fns_token"], REDACTED_SECRET_VALUE)
+        self.assertEqual(package["settings"]["image_storage_secret_access_key"], REDACTED_SECRET_VALUE)
+        self.assertEqual(package["settings"]["telegram_bot_token"], REDACTED_SECRET_VALUE)
+        self.assertEqual(package["settings"]["telegram_webhook_secret"], REDACTED_SECRET_VALUE)
+        self.assertEqual(package["settings"]["feishu_app_secret"], REDACTED_SECRET_VALUE)
+        self.assertEqual(package["settings"]["feishu_verification_token"], REDACTED_SECRET_VALUE)
+        self.assertEqual(package["settings"]["feishu_encrypt_key"], REDACTED_SECRET_VALUE)
+        self.assertEqual(package["settings"]["ai_providers"][0]["api_key"], REDACTED_SECRET_VALUE)
+        self.assertIn("settings.fns_token", package["redacted_fields"])
+        self.assertNotIn("fns-secret", serialized)
+        self.assertNotIn("s3-secret", serialized)
+        self.assertNotIn("tg-token", serialized)
+        self.assertNotIn("fs-secret", serialized)
+        self.assertNotIn("ai-secret", serialized)
+
+    def test_settings_export_package_can_include_plain_secrets(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runtime_path = Path(temp_dir) / "runtime-config.json"
+            env = {
+                "WECHAT_MD_RUNTIME_CONFIG_PATH": str(runtime_path),
+                "WECHAT_MD_APP_MASTER_KEY": "test-master-key",
+                "WECHAT_MD_ADMIN_PASSWORD": "admin",
+            }
+            with patch.dict(os.environ, env, clear=False):
+                save_runtime_config(
+                    {
+                        "fns_token": "fns-secret",
+                        "image_storage_secret_access_key": "s3-secret",
+                        "ai_providers": [
+                            {
+                                "id": "openai-compatible-default",
+                                "type": "openai_compatible",
+                                "display_name": "OpenAI Compatible",
+                                "built_in": True,
+                                "enabled": True,
+                                "base_url": "https://api.example.com/v1",
+                                "api_key": "ai-secret",
+                            }
+                        ],
+                        "ai_models": [
+                            {
+                                "id": "model-openai-compatible-default",
+                                "provider_id": "openai-compatible-default",
+                                "display_name": "gpt-5.4-mini",
+                                "model_id": "gpt-5.4-mini",
+                                "enabled": True,
+                            }
+                        ],
+                        "ai_selected_model_id": "model-openai-compatible-default",
+                    }
+                )
+                package = build_settings_export_package(include_secrets=True)
+
+        self.assertTrue(package["include_secrets"])
+        self.assertEqual(package["settings"]["fns_token"], "fns-secret")
+        self.assertEqual(package["settings"]["image_storage_secret_access_key"], "s3-secret")
+        self.assertEqual(package["settings"]["ai_providers"][0]["api_key"], "ai-secret")
+        self.assertEqual(package["redacted_fields"], [])
+
+    def test_settings_import_preview_reports_groups_and_invalid_fields(self):
+        package = {
+            "schema_version": 1,
+            "app": "wechat-md-server",
+            "settings": {
+                "fns_base_url": "https://fns.example.com",
+                "telegram_enabled": True,
+                "unknown_field": "ignored",
+                "fns_token": REDACTED_SECRET_VALUE,
+            },
+        }
+
+        preview = preview_settings_import_package(package)
+
+        self.assertEqual(preview["status"], "valid")
+        self.assertIn("fns", preview["changed_groups"])
+        self.assertIn("telegram", preview["changed_groups"])
+        self.assertIn("unknown_field", preview["invalid_fields"])
+        self.assertIn("settings.fns_token", preview["redacted_fields"])
+        self.assertFalse(preview["includes_secrets"])
+
+    def test_settings_import_merges_without_clearing_redacted_secrets(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runtime_path = Path(temp_dir) / "runtime-config.json"
+            env = {
+                "WECHAT_MD_RUNTIME_CONFIG_PATH": str(runtime_path),
+                "WECHAT_MD_APP_MASTER_KEY": "test-master-key",
+                "WECHAT_MD_ADMIN_PASSWORD": "admin",
+            }
+            with patch.dict(os.environ, env, clear=False):
+                save_runtime_config(
+                    {
+                        "fns_base_url": "https://old-fns.example.com",
+                        "fns_token": "old-token",
+                        "fns_vault": "old-vault",
+                        "telegram_enabled": False,
+                        "ai_providers": [
+                            {
+                                "id": "openai-compatible-default",
+                                "type": "openai_compatible",
+                                "display_name": "Old Provider",
+                                "built_in": True,
+                                "enabled": True,
+                                "base_url": "https://old-ai.example.com/v1",
+                                "api_key": "old-ai-key",
+                            }
+                        ],
+                        "ai_models": [
+                            {
+                                "id": "model-openai-compatible-default",
+                                "provider_id": "openai-compatible-default",
+                                "display_name": "old-model",
+                                "model_id": "old-model",
+                                "enabled": True,
+                            }
+                        ],
+                        "ai_selected_model_id": "model-openai-compatible-default",
+                    }
+                )
+                import_settings_package(
+                    {
+                        "schema_version": 1,
+                        "app": "wechat-md-server",
+                        "settings": {
+                            "fns_base_url": "https://new-fns.example.com",
+                            "fns_token": REDACTED_SECRET_VALUE,
+                            "telegram_receive_mode": "polling",
+                            "ai_providers": [
+                                {
+                                    "id": "openai-compatible-default",
+                                    "type": "openai_compatible",
+                                    "display_name": "New Provider",
+                                    "built_in": True,
+                                    "enabled": True,
+                                    "base_url": "https://new-ai.example.com/v1",
+                                    "api_key": REDACTED_SECRET_VALUE,
+                                }
+                            ],
+                            "ai_models": [
+                                {
+                                    "id": "model-openai-compatible-default",
+                                    "provider_id": "openai-compatible-default",
+                                    "display_name": "new-model",
+                                    "model_id": "new-model",
+                                    "enabled": True,
+                                }
+                            ],
+                            "ai_selected_model_id": "model-openai-compatible-default",
+                        },
+                    }
+                )
+                settings = get_settings()
+
+        self.assertEqual(settings.fns_base_url, "https://new-fns.example.com")
+        self.assertEqual(settings.fns_token, "old-token")
+        self.assertEqual(settings.fns_vault, "old-vault")
+        self.assertEqual(settings.telegram_receive_mode, "polling")
+        self.assertEqual(settings.ai_selected_provider["base_url"], "https://new-ai.example.com/v1")
+        self.assertEqual(settings.ai_selected_provider["api_key"], "old-ai-key")
+
+    def test_settings_import_rejects_wrong_app_package(self):
+        with self.assertRaisesRegex(ValueError, "wechat-md-server"):
+            preview_settings_import_package(
+                {
+                    "schema_version": 1,
+                    "app": "other-app",
+                    "settings": {},
+                }
+            )
+
+    def test_bot_receive_modes_default_to_webhook_and_persist(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runtime_path = Path(temp_dir) / "runtime-config.json"
+            env = {
+                "WECHAT_MD_RUNTIME_CONFIG_PATH": str(runtime_path),
+                "WECHAT_MD_APP_MASTER_KEY": "test-master-key",
+                "WECHAT_MD_ADMIN_PASSWORD": "admin",
+            }
+            with patch.dict(os.environ, env, clear=False):
+                defaults = get_settings()
+                save_runtime_config(
+                    {
+                        "deployment_mode": "nas",
+                        "telegram_enabled": True,
+                        "telegram_bot_token": "telegram-token",
+                        "telegram_receive_mode": "polling",
+                        "telegram_poll_interval": 5,
+                        "telegram_allowed_chat_ids": "123456",
+                        "feishu_enabled": True,
+                        "feishu_app_id": "cli_xxx",
+                        "feishu_app_secret": "feishu-secret",
+                        "feishu_receive_mode": "long_connection",
+                    }
+                )
+                settings = get_settings()
+                runtime_data = load_runtime_config(runtime_path)
+                runtime_text = runtime_path.read_text(encoding="utf-8")
+
+        self.assertEqual(defaults.deployment_mode, "vps")
+        self.assertEqual(defaults.telegram_receive_mode, "webhook")
+        self.assertEqual(defaults.telegram_poll_interval, 2)
+        self.assertEqual(defaults.feishu_receive_mode, "webhook")
+        self.assertEqual(settings.deployment_mode, "nas")
+        self.assertEqual(settings.telegram_receive_mode, "polling")
+        self.assertEqual(settings.telegram_poll_interval, 5)
+        self.assertEqual(settings.feishu_receive_mode, "long_connection")
+        self.assertEqual(runtime_data["user_settings"]["deployment_mode"], "nas")
+        self.assertEqual(runtime_data["user_settings"]["telegram"]["receive_mode"], "polling")
+        self.assertEqual(runtime_data["user_settings"]["telegram"]["poll_interval"], 5)
+        self.assertEqual(runtime_data["user_settings"]["feishu"]["receive_mode"], "long_connection")
+        self.assertNotIn("telegram-token", runtime_text)
+        self.assertNotIn("feishu-secret", runtime_text)
+
+    def test_receive_modes_can_be_configured_from_prd_env_aliases(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runtime_path = Path(temp_dir) / "runtime-config.json"
+            env = {
+                "WECHAT_MD_RUNTIME_CONFIG_PATH": str(runtime_path),
+                "WECHAT_MD_APP_MASTER_KEY": "test-master-key",
+                "WECHAT_MD_ADMIN_PASSWORD": "admin",
+                "DEPLOYMENT_MODE": "local",
+                "TG_RECEIVE_MODE": "polling",
+                "TG_POLL_INTERVAL": "7",
+                "FEISHU_RECEIVE_MODE": "long_connection",
+            }
+            with patch.dict(os.environ, env, clear=False):
+                settings = get_settings()
+
+        self.assertEqual(settings.deployment_mode, "local")
+        self.assertEqual(settings.telegram_receive_mode, "polling")
+        self.assertEqual(settings.telegram_poll_interval, 7)
+        self.assertEqual(settings.feishu_receive_mode, "long_connection")
 
 
 if __name__ == "__main__":

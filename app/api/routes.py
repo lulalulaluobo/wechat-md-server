@@ -8,6 +8,7 @@ from typing import Any
 
 from fastapi import APIRouter, Cookie, File, Header, HTTPException, Request, Response, UploadFile, BackgroundTasks
 
+from app.bot_workers import start_bot_receivers
 from app.auth import (
     SESSION_COOKIE_NAME,
     build_session_token,
@@ -20,7 +21,10 @@ from app.auth import (
 )
 from app.config import (
     build_admin_settings_payload,
+    build_settings_export_package,
     get_settings,
+    import_settings_package,
+    preview_settings_import_package,
     save_runtime_config,
     update_ai_selected_model,
     update_feishu_webhook_state,
@@ -29,7 +33,9 @@ from app.config import (
 )
 from app.services import (
     authenticate_db_user,
+    build_feishu_bot_message,
     build_sync_config_payload,
+    build_telegram_bot_message,
     build_config_payload,
     build_output_target,
     check_fns_status,
@@ -46,9 +52,12 @@ from app.services import (
     extract_feishu_message_text,
     extract_single_wechat_url,
     get_db_user,
+    get_detected_feishu_open_ids,
     get_scheduler_settings,
+    get_sync_store,
     get_wechat_mp_credentials,
     get_wechat_mp_qr_login_status,
+    handle_bot_message,
     ensure_runtime_environment,
     get_ingest_job,
     get_internal_workdir_root,
@@ -77,6 +86,7 @@ from app.services import (
     TELEGRAM_SECRET_HEADER,
     update_scheduler_settings,
 )
+from app.search.providers import SearchProviderError, search_wechat_provider
 router = APIRouter()
 CSRF_COOKIE_NAME = "wechat_md_csrf"
 _BOT_EVENT_TTL_SECONDS = 10 * 60
@@ -196,6 +206,135 @@ async def convert_batch(
         "output_dir": job["output_dir"],
         "output_target": output_target,
     }
+
+
+@router.get("/api/search/wechat")
+async def search_wechat(
+    q: str = "",
+    limit: int = 10,
+    provider: str = "sogou_weixin",
+    session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
+) -> dict[str, Any]:
+    _require_access(session_cookie)
+    query = str(q or "").strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="搜索关键词不能为空")
+    normalized_limit = max(10, min(50, int(limit or 10)))
+    normalized_provider = str(provider or "sogou_weixin").strip() or "sogou_weixin"
+    if normalized_provider != "sogou_weixin":
+        raise HTTPException(status_code=400, detail="provider 仅支持 sogou_weixin")
+    store = get_sync_store()
+    try:
+        results = search_wechat_provider(query, provider=normalized_provider, limit=normalized_limit)
+    except SearchProviderError as error:
+        store.create_search_query(
+            query=query,
+            provider=normalized_provider,
+            limit=normalized_limit,
+            result_count=0,
+            error_message=str(error),
+        )
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    annotated_results = store.annotate_search_results([dict(item) for item in results])
+    visible_results = [item for item in annotated_results if not item.get("already_ingested")]
+    search_record = store.create_search_query(
+        query=query,
+        provider=normalized_provider,
+        limit=normalized_limit,
+        result_count=len(visible_results),
+    )
+    store.save_search_results(str(search_record["id"]), visible_results)
+    return {
+        "query": query,
+        "provider": normalized_provider,
+        "total": len(visible_results),
+        "cached": False,
+        "results": visible_results,
+    }
+
+
+@router.get("/api/search/history")
+async def get_search_history(
+    limit: int = 20,
+    offset: int = 0,
+    session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
+) -> dict[str, Any]:
+    _require_access(session_cookie)
+    return {
+        "items": get_sync_store().list_search_history(limit=limit, offset=offset),
+        "limit": max(int(limit or 20), 1),
+        "offset": max(int(offset or 0), 0),
+    }
+
+
+@router.post("/api/search/ingest")
+async def ingest_search_results(
+    request: Request,
+    session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
+) -> dict[str, Any]:
+    _require_access(session_cookie)
+    _require_csrf(request, strict=True)
+    payload = await _read_convert_payload(request)
+    urls = parse_links(urls=payload.get("urls"))
+    if not urls:
+        raise HTTPException(status_code=400, detail="未解析到可用的文章链接")
+    skip_ingested = True if payload.get("skip_ingested") is None else _parse_bool(payload.get("skip_ingested"))
+    store = get_sync_store()
+    accepted_urls: list[str] = []
+    skipped = 0
+    if skip_ingested:
+        for url in urls:
+            article = store.get_article_by_url(url)
+            if article is not None and int(article.get("is_ingested") or 0) == 1:
+                skipped += 1
+                continue
+            accepted_urls.append(url)
+    else:
+        accepted_urls = urls
+
+    output_target = build_output_target(payload.get("output_target"))
+    output_dir = get_internal_workdir_root() if output_target == "fns" else normalize_output_dir(payload.get("output_dir"))
+    if not accepted_urls:
+        return {
+            "status": "skipped",
+            "job_id": "",
+            "accepted": 0,
+            "skipped": skipped,
+            "output_target": output_target,
+        }
+
+    timeout = int(payload.get("timeout") or get_settings().default_timeout)
+    save_html = _parse_bool(payload.get("save_html"))
+    task_items = [{"url": url, "task_id": ""} for url in accepted_urls]
+    job = job_store.create_batch_job(
+        urls=accepted_urls,
+        output_dir=output_dir,
+        save_html=save_html,
+        timeout=timeout,
+        output_target=output_target,
+        ai_enabled=_read_optional_bool(payload.get("ai_enabled")),
+        require_ai_success=True,
+        task_items=task_items,
+        trigger_channel="search",
+    )
+    return {
+        "status": "queued",
+        "job_id": job["job_id"],
+        "accepted": len(accepted_urls),
+        "skipped": skipped,
+        "output_target": output_target,
+    }
+
+
+@router.delete("/api/search/history/{search_query_id}")
+async def delete_search_history(
+    search_query_id: str,
+    request: Request,
+    session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
+) -> dict[str, Any]:
+    _require_access(session_cookie)
+    _require_csrf(request, strict=True)
+    return {"deleted": get_sync_store().delete_search_query(search_query_id)}
 
 
 @router.get("/api/jobs/{job_id}")
@@ -364,6 +503,68 @@ async def get_admin_settings(
     return payload
 
 
+@router.post("/api/admin/settings/export")
+async def export_admin_settings(
+    request: Request,
+    session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
+) -> dict[str, Any]:
+    _require_access(session_cookie)
+    _require_csrf(request, strict=True)
+    payload = await _read_convert_payload(request)
+    return build_settings_export_package(include_secrets=_parse_bool(payload.get("include_secrets")))
+
+
+@router.post("/api/admin/settings/import/preview")
+async def preview_admin_settings_import(
+    request: Request,
+    session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
+) -> dict[str, Any]:
+    _require_access(session_cookie)
+    _require_csrf(request, strict=True)
+    payload = await _read_convert_payload(request)
+    try:
+        return preview_settings_import_package(payload)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.post("/api/admin/settings/import")
+async def import_admin_settings(
+    request: Request,
+    session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
+) -> dict[str, Any]:
+    _require_access(session_cookie)
+    _require_csrf(request, strict=True)
+    payload = await _read_convert_payload(request)
+    try:
+        result = import_settings_package(payload)
+        webhook_state = configure_telegram_webhook()
+        feishu_webhook_state = configure_feishu_webhook_state()
+        if isinstance(webhook_state, dict):
+            update_telegram_webhook_state(
+                str(webhook_state.get("status") or "inactive"),
+                str(webhook_state.get("message") or ""),
+                webhook_url=str(webhook_state.get("webhook_url") or ""),
+            )
+        if isinstance(feishu_webhook_state, dict):
+            update_feishu_webhook_state(
+                str(feishu_webhook_state.get("status") or "inactive"),
+                str(feishu_webhook_state.get("message") or ""),
+                webhook_url=str(feishu_webhook_state.get("webhook_url") or ""),
+            )
+        start_bot_receivers()
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return {
+        **result,
+        "settings": build_admin_settings_payload(),
+        "telegram_webhook": webhook_state,
+        "feishu_webhook": feishu_webhook_state,
+    }
+
+
 @router.get("/api/admin/fns-status")
 async def get_admin_fns_status(
     session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
@@ -453,6 +654,7 @@ async def update_admin_settings(
                 str(feishu_webhook_state.get("message") or ""),
                 webhook_url=str(feishu_webhook_state.get("webhook_url") or ""),
             )
+        start_bot_receivers()
     except Exception as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
@@ -779,37 +981,22 @@ async def telegram_webhook(
     settings = get_settings()
     if not settings.telegram_enabled:
         return {"status": "ignored", "reason": "telegram_disabled"}
+    if settings.telegram_receive_mode != "webhook":
+        return {"status": "ignored", "reason": "telegram_webhook_disabled"}
     if not settings.telegram_webhook_secret or telegram_secret != settings.telegram_webhook_secret:
         raise HTTPException(status_code=403, detail="Telegram webhook secret 无效")
 
     payload = await request.json()
-    message = payload.get("message") if isinstance(payload, dict) else None
-    if not isinstance(message, dict):
+    if not isinstance(payload, dict):
         return {"status": "ignored", "reason": "no_message"}
-
-    chat = message.get("chat") if isinstance(message.get("chat"), dict) else {}
-    chat_id = str(chat.get("id") or "").strip()
-    if not chat_id or chat_id not in settings.telegram_allowed_chat_ids:
-        return {"status": "ignored", "reason": "chat_not_allowed"}
-    event_key = _build_telegram_event_key(payload, chat_id)
-    if _remember_bot_event(event_key, "telegram"):
-        return {"status": "ignored", "reason": "duplicate_message"}
-
-    text = str(message.get("text") or "").strip()
-    url, url_count = extract_single_wechat_url(text)
-    if url_count == 0 or not url:
-        send_telegram_message(chat_id, "未识别到可用链接，请直接发送一条公众号或普通网页链接。")
-        return {"status": "replied", "reason": "no_link"}
-    if url_count > 1:
-        send_telegram_message(chat_id, "一次只支持一条链接，请只发送一条公众号或普通网页链接。")
-        return {"status": "replied", "reason": "multiple_links"}
-    if not settings.fns_enabled:
-        send_telegram_message(chat_id, "当前 FNS 尚未配置完成，无法执行 Telegram 单篇转换。")
-        return {"status": "replied", "reason": "fns_not_configured"}
-
-    send_telegram_message(chat_id, "已接收，开始转换。")
-    submit_telegram_convert_task(url, chat_id)
-    return {"status": "accepted"}
+    bot_message = build_telegram_bot_message(payload, "webhook")
+    if bot_message is None:
+        return {"status": "ignored", "reason": "no_message"}
+    return handle_bot_message(
+        bot_message,
+        telegram_sender=send_telegram_message,
+        telegram_submitter=submit_telegram_convert_task,
+    )
 
 
 @router.post("/api/integrations/feishu/webhook")
@@ -833,38 +1020,37 @@ async def feishu_webhook(
 
     if not settings.feishu_enabled:
         return {"status": "ignored", "reason": "feishu_disabled"}
+    if settings.feishu_receive_mode != "webhook":
+        return {"status": "ignored", "reason": "feishu_webhook_disabled"}
 
-    text, open_id, chat_type = extract_feishu_message_text(payload)
-    if not open_id:
+    bot_message = build_feishu_bot_message(payload, "webhook")
+    if bot_message is None:
         return {"status": "ignored", "reason": "missing_open_id"}
+    text = str(bot_message.get("raw_text") or "")
+    open_id = str(bot_message.get("sender_id") or "")
+    chat_type = str(bot_message.get("chat_type") or "")
+    _record_feishu_open_id(open_id)
     print(f"[feishu] received message open_id={open_id} chat_type={chat_type}")
-    if chat_type != "p2p":
-        return {"status": "ignored", "reason": "chat_type_not_supported"}
-    if settings.feishu_allowed_open_ids and open_id not in settings.feishu_allowed_open_ids:
-        return {"status": "ignored", "reason": "open_id_not_allowed"}
-    event_key = _build_feishu_event_key(payload, open_id)
-    if _remember_bot_event(event_key, "feishu"):
-        return {"status": "ignored", "reason": "duplicate_message"}
-
     url, url_count = extract_single_wechat_url(text)
     print(
         "[feishu] message parsed "
         f"open_id={open_id} url_count={url_count} "
-        f"url_found={bool(url)} event_key={event_key or '-'}"
+        f"url_found={bool(url)} event_key={bot_message.get('event_key') or '-'}"
     )
-    if url_count == 0 or not url:
-        _safe_send_feishu_message(open_id, "未识别到可用链接，请直接发送一条公众号或普通网页链接。")
-        return {"status": "replied", "reason": "no_link"}
-    if url_count > 1:
-        _safe_send_feishu_message(open_id, "一次只支持一条链接，请只发送一条公众号或普通网页链接。")
-        return {"status": "replied", "reason": "multiple_links"}
-    if not settings.fns_enabled:
-        _safe_send_feishu_message(open_id, "当前 FNS 尚未配置完成，无法执行飞书单篇转换。")
-        return {"status": "replied", "reason": "fns_not_configured"}
+    return handle_bot_message(
+        bot_message,
+        feishu_sender=_safe_send_feishu_message,
+        feishu_submitter=submit_feishu_convert_task,
+    )
 
-    _safe_send_feishu_message(open_id, "已接收，开始转换。")
-    submit_feishu_convert_task(url, open_id)
-    return {"status": "accepted"}
+
+@router.get("/api/integrations/feishu/detected-open-ids")
+async def feishu_detected_open_ids(
+    session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
+) -> dict[str, Any]:
+    _require_access(session_cookie)
+    ids = get_detected_feishu_open_ids()
+    return {"open_ids": ids}
 
 
 def _parse_bool(value: Any) -> bool:
