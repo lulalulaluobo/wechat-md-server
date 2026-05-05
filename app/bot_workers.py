@@ -129,6 +129,18 @@ def _run_feishu_ws_client() -> None:
     except ImportError as error:
         raise RuntimeError("飞书长连接需要安装 lark-oapi 依赖") from error
 
+    import os
+    import ssl
+
+    if not os.environ.get("SSL_CERT_FILE"):
+        try:
+            import certifi
+            os.environ["SSL_CERT_FILE"] = certifi.where()
+        except ImportError:
+            default = ssl.get_default_verify_paths().openssl_cafile
+            if default and os.path.isfile(default):
+                os.environ["SSL_CERT_FILE"] = default
+
     settings = get_settings()
     if not settings.feishu_app_id or not settings.feishu_app_secret:
         raise RuntimeError("飞书 App ID / App Secret 未配置")
