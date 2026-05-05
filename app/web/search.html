@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>主题搜索 — Wechat MD</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/assets/admin.css?v=20260331f">
+</head>
+<body>
+  <nav class="top-nav">
+    <div class="logo">Wechat <span>MD</span></div>
+    <a class="nav-item" href="/">转换</a>
+    <a class="nav-item" href="/sync">同步源</a>
+    <a class="nav-item" href="/articles">文章库</a>
+    <a class="nav-item active" href="/search">主题搜索</a>
+    <a class="nav-item" href="/settings">设置</a>
+    <div class="theme-switcher"><button class="theme-btn" id="theme-toggle" title="切换主题"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg></button><div class="theme-dropdown hidden" id="theme-dropdown"><button class="theme-option" data-theme-value="warm-minimal"><span class="theme-dot" style="background:#3D8B5E;"></span>Warm Minimal<span class="theme-check">&#10003;</span></button><button class="theme-option" data-theme-value="terracotta"><span class="theme-dot" style="background:#C67B5C;"></span>Terracotta<span class="theme-check">&#10003;</span></button><button class="theme-option" data-theme-value="ocean-dark"><span class="theme-dot" style="background:#EA580C;"></span>Ocean Dark<span class="theme-check">&#10003;</span></button><button class="theme-option" data-theme-value="ink"><span class="theme-dot" style="background:#2563EB;"></span>Ink<span class="theme-check">&#10003;</span></button></div></div><button id="logout-btn" class="nav-item logout">退出</button>
+  </nav>
+
+  <div class="page">
+    <div class="page-header">
+      <h1>主题搜索</h1>
+      <p>按关键词查找公众号文章，人工勾选后加入现有批量转换队列。</p>
+    </div>
+
+    <div class="card">
+      <h2 class="card-title">搜索条件</h2>
+      <div class="field-row">
+        <div class="field">
+          <label for="search-query">搜索关键词</label>
+          <input id="search-query" placeholder="例如：AI 编程工作流">
+        </div>
+        <div class="field">
+          <label for="search-provider">Provider</label>
+          <select id="search-provider">
+            <option value="sogou_weixin">搜狗微信</option>
+            <option value="local_cache">本地缓存（暂未支持）</option>
+            <option value="web_search">Web Search（暂未支持）</option>
+          </select>
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label for="search-limit">返回数量</label>
+          <select id="search-limit">
+            <option value="10">10</option>
+            <option value="20">20</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>&nbsp;</label>
+          <label class="check-row">
+            <input id="search-ai-enabled" type="checkbox" checked>
+            入库时启用 AI 润色
+          </label>
+        </div>
+      </div>
+      <div class="action-row">
+        <button id="search-submit" class="btn btn-primary">搜索</button>
+        <button id="select-uningested" class="btn btn-secondary">选择未入库</button>
+        <button id="clear-results" class="btn btn-ghost">清空结果</button>
+        <button id="ingest-selected" class="btn btn-primary">批量入库</button>
+      </div>
+      <div id="search-result-area"></div>
+    </div>
+
+    <div class="card">
+      <h2 class="card-title">搜索结果</h2>
+      <div style="overflow:auto;">
+        <table style="width:100%; border-collapse:collapse;">
+          <thead>
+            <tr>
+              <th style="text-align:left; padding:10px 8px;">选择</th>
+              <th style="text-align:left; padding:10px 8px;">标题</th>
+              <th style="text-align:left; padding:10px 8px;">公众号</th>
+              <th style="text-align:left; padding:10px 8px;">发布时间</th>
+              <th style="text-align:left; padding:10px 8px;">入库</th>
+              <th style="text-align:left; padding:10px 8px;">原文</th>
+            </tr>
+          </thead>
+          <tbody id="search-results-body"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2 class="card-title">搜索历史</h2>
+      <div id="search-history-area" class="text-muted">尚未加载。</div>
+    </div>
+  </div>
+
+  <script src="/assets/admin.js?v=20260331f"></script>
+  <script>
+    let currentResults = [];
+
+    function resultBadge(item) {
+      return item.already_ingested
+        ? '<span class="badge success">已入库</span>'
+        : '<span class="badge info">未入库</span>';
+    }
+
+    function renderResults() {
+      const body = document.getElementById("search-results-body");
+      if (!currentResults.length) {
+        body.innerHTML = '<tr><td colspan="6" class="text-muted" style="padding:12px 8px;">暂无结果</td></tr>';
+        return;
+      }
+      body.innerHTML = currentResults.map((item, index) => {
+        const checked = item.already_ingested ? "" : "checked";
+        const disabled = item.already_ingested ? "disabled" : "";
+        return `
+          <tr>
+            <td style="padding:10px 8px;"><input class="result-check" type="checkbox" data-index="${index}" ${checked} ${disabled}></td>
+            <td style="padding:10px 8px; min-width:240px;">
+              <div style="font-weight:600;">${AdminUI.escapeHtml(item.title || "-")}</div>
+              <div class="text-muted" style="font-size:12px; max-width:520px;">${AdminUI.escapeHtml(item.snippet || "")}</div>
+            </td>
+            <td style="padding:10px 8px;">${AdminUI.escapeHtml(item.source_name || "-")}</td>
+            <td style="padding:10px 8px;">${AdminUI.escapeHtml(item.published_at || "-")}</td>
+            <td style="padding:10px 8px;">${resultBadge(item)}</td>
+            <td style="padding:10px 8px;"><a href="${AdminUI.escapeHtml(item.url)}" target="_blank" rel="noreferrer">打开</a></td>
+          </tr>
+        `;
+      }).join("");
+    }
+
+    async function loadHistory() {
+      const area = document.getElementById("search-history-area");
+      try {
+        const res = await fetch("/api/search/history?limit=10");
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json();
+        const items = data.items || [];
+        if (!items.length) {
+          area.textContent = "暂无搜索历史。";
+          return;
+        }
+        area.innerHTML = items.map((item) => `
+          <div style="display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--border);">
+            <span style="font-weight:600;">${AdminUI.escapeHtml(item.query)}</span>
+            <span class="text-muted">${AdminUI.escapeHtml(item.provider)} · ${item.result_count || 0} 条</span>
+            <button class="btn btn-ghost delete-history" data-id="${AdminUI.escapeHtml(item.id)}" style="margin-left:auto;">删除</button>
+          </div>
+        `).join("");
+      } catch (error) {
+        area.textContent = "搜索历史加载失败。";
+      }
+    }
+
+    document.getElementById("search-submit").addEventListener("click", async () => {
+      const query = document.getElementById("search-query").value.trim();
+      const limit = document.getElementById("search-limit").value;
+      const provider = document.getElementById("search-provider").value;
+      if (!query) {
+        AdminUI.toast("请输入搜索关键词", "warn");
+        return;
+      }
+      AdminUI.setHtml("search-result-area", "");
+      try {
+        const res = await fetch(`/api/search/wechat?q=${encodeURIComponent(query)}&limit=${encodeURIComponent(limit)}&provider=${encodeURIComponent(provider)}`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "搜索失败");
+        currentResults = data.results || [];
+        renderResults();
+        AdminUI.setHtml("search-result-area", AdminUI.resultHtml({
+          tone: "success",
+          title: "搜索完成",
+          items: [
+            { label: "Provider", value: data.provider },
+            { label: "结果数", value: data.total },
+          ],
+        }));
+        loadHistory();
+      } catch (error) {
+        AdminUI.setHtml("search-result-area", AdminUI.resultHtml({ tone: "error", title: "搜索失败", description: error.message }));
+      }
+    });
+
+    document.getElementById("select-uningested").addEventListener("click", () => {
+      document.querySelectorAll(".result-check").forEach((input) => {
+        input.checked = !input.disabled;
+      });
+    });
+
+    document.getElementById("clear-results").addEventListener("click", () => {
+      currentResults = [];
+      renderResults();
+      AdminUI.setHtml("search-result-area", "");
+    });
+
+    document.getElementById("ingest-selected").addEventListener("click", async () => {
+      const urls = Array.from(document.querySelectorAll(".result-check:checked"))
+        .map((input) => currentResults[Number(input.dataset.index)]?.url)
+        .filter(Boolean);
+      if (!urls.length) {
+        AdminUI.toast("请选择未入库文章", "warn");
+        return;
+      }
+      try {
+        const res = await fetch("/api/search/ingest", {
+          method: "POST",
+          headers: AdminUI.buildJsonHeaders(),
+          body: JSON.stringify({
+            urls,
+            ai_enabled: document.getElementById("search-ai-enabled").checked,
+            skip_ingested: true,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "入库失败");
+        AdminUI.setHtml("search-result-area", AdminUI.resultHtml({
+          tone: "success",
+          title: "已加入批量队列",
+          items: [
+            { label: "任务 ID", value: data.job_id || "-" },
+            { label: "接受", value: data.accepted },
+            { label: "跳过", value: data.skipped },
+            { label: "输出", value: data.output_target },
+          ],
+        }));
+      } catch (error) {
+        AdminUI.setHtml("search-result-area", AdminUI.resultHtml({ tone: "error", title: "入库失败", description: error.message }));
+      }
+    });
+
+    document.getElementById("search-history-area").addEventListener("click", async (event) => {
+      const button = event.target.closest(".delete-history");
+      if (!button) return;
+      const id = button.getAttribute("data-id");
+      const res = await fetch(`/api/search/history/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+        headers: AdminUI.buildJsonHeaders(),
+      });
+      if (res.ok) loadHistory();
+    });
+
+    document.addEventListener("DOMContentLoaded", () => {
+      renderResults();
+      loadHistory();
+    });
+  </script>
+</body>
+</html>

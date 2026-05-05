@@ -532,6 +532,7 @@ class JobStore:
         ai_enabled: bool | None = None,
         require_ai_success: bool = False,
         task_items: list[dict[str, Any]] | None = None,
+        trigger_channel: str = "web",
     ) -> dict[str, Any]:
         job_id = uuid.uuid4().hex
         payload = {
@@ -547,6 +548,7 @@ class JobStore:
             "output_target": output_target,
             "ai_enabled": bool(ai_enabled),
             "require_ai_success": bool(require_ai_success),
+            "trigger_channel": str(trigger_channel or "web").strip() or "web",
             "results": [],
             "errors": [],
         }
@@ -562,6 +564,7 @@ class JobStore:
             output_target,
             ai_enabled,
             require_ai_success,
+            trigger_channel,
         )
         return payload.copy()
 
@@ -580,6 +583,7 @@ class JobStore:
         output_target: str,
         ai_enabled: bool | None,
         require_ai_success: bool,
+        trigger_channel: str,
     ) -> None:
         ensure_runtime_environment()
         self._update(job_id, status="running")
@@ -594,7 +598,7 @@ class JobStore:
                     output_target=output_target,
                     ai_enabled=ai_enabled,
                     require_ai_success=require_ai_success,
-                    trigger_channel="web",
+                    trigger_channel=str(trigger_channel or "web").strip() or "web",
                     task_id=task_id,
                     batch_workspace_root=output_dir if output_target != "fns" else None,
                     workspace_prefix=f"batch-{job_id[:8]}",

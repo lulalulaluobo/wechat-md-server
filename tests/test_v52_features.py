@@ -249,6 +249,101 @@ class V52FeatureTests(unittest.TestCase):
         self.assertEqual(fetched["bot_message_id"], "778")
         self.assertEqual(fetched["deployment_mode"], "nas")
 
+    def test_search_history_and_results_are_persisted_desc(self):
+        store = get_sync_store()
+
+        first = store.create_search_query(
+            query="AI 编程工作流",
+            provider="sogou_weixin",
+            limit=10,
+            result_count=1,
+        )
+        second = store.create_search_query(
+            query="知识库",
+            provider="sogou_weixin",
+            limit=20,
+            result_count=0,
+        )
+        store.save_search_results(
+            str(first["id"]),
+            [
+                {
+                    "title": "AI 编程工作流实践",
+                    "url": "https://mp.weixin.qq.com/s/search-a",
+                    "source_name": "某公众号",
+                    "published_at": "2026-05-01",
+                    "snippet": "摘要",
+                    "provider": "sogou_weixin",
+                    "score": None,
+                }
+            ],
+        )
+
+        history = store.list_search_history(limit=10)
+
+        self.assertEqual(history[0]["id"], second["id"])
+        self.assertEqual(history[1]["id"], first["id"])
+        self.assertEqual(history[1]["result_count"], 1)
+
+    def test_search_results_are_marked_already_ingested(self):
+        store = get_sync_store()
+        store.upsert_article(
+            {
+                "article_url": "https://mp.weixin.qq.com/s/search-ingested",
+                "source_type": "wechat",
+                "is_ingested": True,
+                "fetch_status": "success",
+                "process_status": "success",
+            }
+        )
+
+        results = store.annotate_search_results(
+            [
+                {
+                    "title": "已入库文章",
+                    "url": "https://mp.weixin.qq.com/s/search-ingested",
+                    "source_name": "某公众号",
+                    "published_at": "",
+                    "snippet": "",
+                    "provider": "sogou_weixin",
+                    "score": None,
+                },
+                {
+                    "title": "未入库文章",
+                    "url": "https://mp.weixin.qq.com/s/search-new",
+                    "source_name": "某公众号",
+                    "published_at": "",
+                    "snippet": "",
+                    "provider": "sogou_weixin",
+                    "score": None,
+                },
+            ]
+        )
+
+        self.assertTrue(results[0]["already_ingested"])
+        self.assertFalse(results[1]["already_ingested"])
+
+    def test_article_execution_accepts_search_trigger_channel(self):
+        store = get_sync_store()
+        article, _ = store.upsert_article(
+            {
+                "article_url": "https://mp.weixin.qq.com/s/search-trigger",
+                "source_type": "wechat",
+                "fetch_status": "queued",
+                "process_status": "queued",
+            }
+        )
+
+        execution = store.create_article_execution(
+            article_id=str(article["id"]),
+            article_url=str(article["article_url"]),
+            trigger_channel="search",
+            source_type="wechat",
+            status="queued",
+        )
+
+        self.assertEqual(execution["trigger_channel"], "search")
+
 
 if __name__ == "__main__":
     unittest.main()

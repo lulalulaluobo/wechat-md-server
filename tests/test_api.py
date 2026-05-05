@@ -108,6 +108,19 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 303)
         self.assertEqual(response.headers["location"], "/articles")
 
+    def test_search_page_requires_login_and_renders_after_login(self):
+        blocked = self.client.get("/search", follow_redirects=False)
+        self.assertEqual(blocked.status_code, 303)
+        self.assertEqual(blocked.headers["location"], "/login")
+
+        self._login()
+        response = self.client.get("/search")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("主题搜索", response.text)
+        self.assertIn("搜索关键词", response.text)
+        self.assertIn("批量入库", response.text)
+
     def test_wrong_password_is_rejected(self):
         response = self._login(password="wrong-password")
 
@@ -475,6 +488,122 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["job_id"], "job-file")
 
+    def test_search_wechat_requires_login(self):
+        response = self.client.get("/api/search/wechat?q=AI")
+
+        self.assertEqual(response.status_code, 401)
+
+    def test_search_wechat_rejects_empty_query(self):
+        self._login()
+        response = self.client.get("/api/search/wechat?q=")
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_search_wechat_normalizes_limit_and_persists_history(self):
+        self._login()
+        fake_results = [
+            {
+                "title": "AI 编程工作流实践",
+                "url": "https://mp.weixin.qq.com/s/search-api",
+                "source_name": "某公众号",
+                "published_at": "2026-05-01",
+                "snippet": "摘要",
+                "provider": "sogou_weixin",
+                "score": None,
+            }
+        ]
+        with patch("app.api.routes.search_wechat_provider", return_value=fake_results) as mocked_search:
+            response = self.client.get("/api/search/wechat?q=AI&limit=13&provider=sogou_weixin")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["query"], "AI")
+        self.assertEqual(payload["provider"], "sogou_weixin")
+        self.assertEqual(payload["total"], 1)
+        self.assertFalse(payload["cached"])
+        self.assertFalse(payload["results"][0]["already_ingested"])
+        self.assertEqual(mocked_search.call_args.kwargs["limit"], 10)
+
+        history = self.client.get("/api/search/history")
+        self.assertEqual(history.status_code, 200)
+        self.assertEqual(history.json()["items"][0]["query"], "AI")
+
+    def test_search_wechat_unsupported_provider_returns_clear_error(self):
+        self._login()
+        response = self.client.get("/api/search/wechat?q=AI&provider=local_cache")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("暂未支持", response.json()["detail"])
+
+    def test_search_ingest_reuses_batch_job_and_skips_ingested(self):
+        login = self._login()
+        csrf_token = login.json()["csrf_token"]
+        from app.services import get_sync_store
+
+        get_sync_store().upsert_article(
+            {
+                "article_url": "https://mp.weixin.qq.com/s/search-ingested-api",
+                "source_type": "wechat",
+                "is_ingested": True,
+                "fetch_status": "success",
+                "process_status": "success",
+            }
+        )
+        with patch("app.api.routes.job_store.create_batch_job") as mocked:
+            mocked.return_value = {
+                "job_id": "search-job-1",
+                "total": 1,
+                "output_dir": str(Path(self.temp_dir.name) / "workdir"),
+            }
+            response = self.client.post(
+                "/api/search/ingest",
+                headers={"X-CSRF-Token": csrf_token},
+                json={
+                    "urls": [
+                        "https://mp.weixin.qq.com/s/search-ingested-api",
+                        "https://mp.weixin.qq.com/s/search-new-api",
+                        "https://mp.weixin.qq.com/s/search-new-api",
+                        "",
+                    ],
+                    "ai_enabled": True,
+                    "skip_ingested": True,
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "queued")
+        self.assertEqual(payload["job_id"], "search-job-1")
+        self.assertEqual(payload["accepted"], 1)
+        self.assertEqual(payload["skipped"], 1)
+        self.assertIn(payload["output_target"], {"fns", "local"})
+        self.assertEqual(payload["output_target"], mocked.call_args.kwargs["output_target"])
+        self.assertEqual(mocked.call_args.kwargs["urls"], ["https://mp.weixin.qq.com/s/search-new-api"])
+        self.assertEqual(mocked.call_args.kwargs["trigger_channel"], "search")
+        self.assertTrue(mocked.call_args.kwargs["require_ai_success"])
+
+    def test_search_history_delete_requires_csrf(self):
+        login = self._login()
+        csrf_token = login.json()["csrf_token"]
+        from app.services import get_sync_store
+
+        record = get_sync_store().create_search_query(
+            query="待删除",
+            provider="sogou_weixin",
+            limit=10,
+            result_count=0,
+        )
+
+        forbidden = self.client.delete(f"/api/search/history/{record['id']}", headers={"Origin": "http://testserver"})
+        self.assertEqual(forbidden.status_code, 403)
+
+        deleted = self.client.delete(
+            f"/api/search/history/{record['id']}",
+            headers={"X-CSRF-Token": csrf_token},
+        )
+        self.assertEqual(deleted.status_code, 200)
+        self.assertTrue(deleted.json()["deleted"])
+
     def test_parse_links_accepts_query_style_wechat_links(self):
         links = parse_links(
             urls_text="这里有一条微信文章：https://mp.weixin.qq.com/s?__biz=MzA4OTU3NzQ2OA==&mid=2661544116&idx=1&sn=abcd1234"
@@ -710,8 +839,8 @@ class ApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         text = response.text
-        self.assertIn("配置总览", text)
-        self.assertIn("连接诊断", text)
+        self.assertNotIn("配置总览", text)
+        self.assertNotIn('id="deployment-mode"', text)
         self.assertIn("FNS 配置", text)
         self.assertIn("运行行为", text)
         self.assertIn("从剪贴板导入 FNS", text)
@@ -719,7 +848,6 @@ class ApiTests(unittest.TestCase):
         self.assertIn('id="fns-json-input"', text)
         self.assertIn("设置中心", text)
         self.assertIn("检测 FNS 连接", text)
-        self.assertIn('id="fns-status-result"', text)
 
     def test_settings_page_contains_single_conversion_isolation_controls(self):
         self._login()
@@ -1692,6 +1820,177 @@ class ApiTests(unittest.TestCase):
         self.assertNotIn("secret-1", str(data))
         self.assertNotIn("ai-secret-key", str(data))
         self.assertNotIn("access_token_configured", data)
+
+    def test_settings_export_requires_login_and_csrf(self):
+        blocked = self.client.post("/api/admin/settings/export", json={"include_secrets": False})
+        self.assertEqual(blocked.status_code, 401)
+
+        self._login()
+        forbidden = self.client.post(
+            "/api/admin/settings/export",
+            headers={"Origin": "http://testserver"},
+            json={"include_secrets": False},
+        )
+
+        self.assertEqual(forbidden.status_code, 403)
+
+    def test_settings_export_redacts_by_default_and_includes_plain_secrets_on_request(self):
+        login = self._login()
+        csrf_token = login.json()["csrf_token"]
+        self.client.put(
+            "/api/admin/settings",
+            json={
+                "fns_base_url": "https://fns.example.com",
+                "fns_token": "fns-secret-token",
+                "fns_vault": "MainVault",
+                "image_mode": "s3_hotlink",
+                "image_storage_endpoint": "https://s3.example.com",
+                "image_storage_region": "auto",
+                "image_storage_bucket": "bucket-a",
+                "image_storage_access_key_id": "key-1",
+                "image_storage_secret_access_key": "s3-secret",
+                "image_storage_path_template": "wechat/{filename}",
+                "image_storage_public_base_url": "https://img.example.com",
+                "ai_providers": [
+                    {
+                        "id": "openai-compatible-default",
+                        "type": "openai_compatible",
+                        "display_name": "OpenAI Compatible",
+                        "built_in": True,
+                        "enabled": True,
+                        "base_url": "https://api.example.com/v1",
+                        "api_key": "ai-secret-key",
+                    }
+                ],
+                "ai_models": [
+                    {
+                        "id": "model-openai-compatible-default",
+                        "provider_id": "openai-compatible-default",
+                        "display_name": "gpt-5.4-mini",
+                        "model_id": "gpt-5.4-mini",
+                        "enabled": True,
+                    }
+                ],
+                "ai_selected_model_id": "model-openai-compatible-default",
+            },
+        )
+
+        redacted = self.client.post(
+            "/api/admin/settings/export",
+            headers={"X-CSRF-Token": csrf_token},
+            json={"include_secrets": False},
+        )
+        plain = self.client.post(
+            "/api/admin/settings/export",
+            headers={"X-CSRF-Token": csrf_token},
+            json={"include_secrets": True},
+        )
+
+        self.assertEqual(redacted.status_code, 200)
+        redacted_payload = redacted.json()
+        self.assertEqual(redacted_payload["schema_version"], 1)
+        self.assertEqual(redacted_payload["app"], "wechat-md-server")
+        self.assertFalse(redacted_payload["include_secrets"])
+        self.assertNotIn("fns-secret-token", str(redacted_payload))
+        self.assertNotIn("s3-secret", str(redacted_payload))
+        self.assertNotIn("ai-secret-key", str(redacted_payload))
+        self.assertEqual(redacted_payload["settings"]["fns_token"], "__REDACTED__")
+
+        self.assertEqual(plain.status_code, 200)
+        plain_payload = plain.json()
+        self.assertTrue(plain_payload["include_secrets"])
+        self.assertEqual(plain_payload["settings"]["fns_token"], "fns-secret-token")
+        self.assertEqual(plain_payload["settings"]["image_storage_secret_access_key"], "s3-secret")
+        self.assertEqual(plain_payload["settings"]["ai_providers"][0]["api_key"], "ai-secret-key")
+
+    def test_settings_import_preview_and_import_require_csrf(self):
+        self._login()
+        package = {"schema_version": 1, "app": "wechat-md-server", "settings": {"fns_base_url": "https://x.example.com"}}
+
+        preview = self.client.post(
+            "/api/admin/settings/import/preview",
+            headers={"Origin": "http://testserver"},
+            json=package,
+        )
+        imported = self.client.post(
+            "/api/admin/settings/import",
+            headers={"Origin": "http://testserver"},
+            json=package,
+        )
+
+        self.assertEqual(preview.status_code, 403)
+        self.assertEqual(imported.status_code, 403)
+
+    def test_settings_import_preview_rejects_invalid_package(self):
+        login = self._login()
+        csrf_token = login.json()["csrf_token"]
+
+        response = self.client.post(
+            "/api/admin/settings/import/preview",
+            headers={"X-CSRF-Token": csrf_token},
+            json={"schema_version": 1, "app": "other-app", "settings": {}},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("wechat-md-server", response.json()["detail"])
+
+    def test_settings_import_merges_config_and_preserves_redacted_secrets(self):
+        login = self._login()
+        csrf_token = login.json()["csrf_token"]
+        self.client.put(
+            "/api/admin/settings",
+            json={
+                "fns_base_url": "https://old-fns.example.com",
+                "fns_token": "old-token",
+                "fns_vault": "old-vault",
+                "telegram_enabled": False,
+            },
+        )
+        package = {
+            "schema_version": 1,
+            "app": "wechat-md-server",
+            "settings": {
+                "fns_base_url": "https://new-fns.example.com",
+                "fns_token": "__REDACTED__",
+                "telegram_receive_mode": "polling",
+                "unknown_field": "ignored",
+            },
+        }
+
+        preview = self.client.post(
+            "/api/admin/settings/import/preview",
+            headers={"X-CSRF-Token": csrf_token},
+            json=package,
+        )
+        imported = self.client.post(
+            "/api/admin/settings/import",
+            headers={"X-CSRF-Token": csrf_token},
+            json=package,
+        )
+
+        self.assertEqual(preview.status_code, 200)
+        self.assertIn("fns", preview.json()["changed_groups"])
+        self.assertIn("telegram", preview.json()["changed_groups"])
+        self.assertIn("unknown_field", preview.json()["invalid_fields"])
+        self.assertFalse(preview.json()["includes_secrets"])
+        self.assertEqual(imported.status_code, 200)
+        data = imported.json()["settings"]
+        self.assertEqual(data["fns_base_url"], "https://new-fns.example.com")
+        self.assertEqual(data["fns_vault"], "old-vault")
+        self.assertTrue(data["fns_token_configured"])
+        self.assertEqual(data["telegram_receive_mode"], "polling")
+
+    def test_settings_page_contains_config_backup_controls(self):
+        self._login()
+        response = self.client.get("/settings")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("配置备份", response.text)
+        self.assertIn("include-secrets-export", response.text)
+        self.assertIn("export-settings", response.text)
+        self.assertIn("settings-import-file", response.text)
+        self.assertIn("preview-settings-import", response.text)
+        self.assertIn("confirm-settings-import", response.text)
 
     def test_admin_settings_put_updates_runtime_config_and_config_endpoint(self):
         self._login()

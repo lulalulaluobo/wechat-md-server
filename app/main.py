@@ -37,7 +37,7 @@ async def add_security_headers(request: Request, call_next):
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("Referrer-Policy", "same-origin")
     path = request.url.path
-    if path.endswith(".html") or path.endswith(".js") or path.endswith(".css") or path in {"/", "/login", "/settings", "/sync", "/articles", "/tasks"}:
+    if path.endswith(".html") or path.endswith(".js") or path.endswith(".css") or path in {"/", "/login", "/settings", "/sync", "/articles", "/tasks", "/search"}:
         response.headers["Cache-Control"] = "no-store"
     return response
 
@@ -77,6 +77,13 @@ async def articles_page(
     session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
 ):
     return _resolve_page("articles.html", session_cookie)
+
+
+@app.get("/search", include_in_schema=False)
+async def search_page(
+    session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
+):
+    return _resolve_page("search.html", session_cookie)
 
 
 @app.get("/login", include_in_schema=False)

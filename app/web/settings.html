@@ -16,6 +16,7 @@
     <a class="nav-item" href="/">转换</a>
     <a class="nav-item" href="/sync">同步源</a>
     <a class="nav-item" href="/articles">文章库</a>
+    <a class="nav-item" href="/search">主题搜索</a>
     <a class="nav-item active" href="/settings">设置</a>
     <div class="theme-switcher"><button class="theme-btn" id="theme-toggle" title="切换主题"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg></button><div class="theme-dropdown hidden" id="theme-dropdown"><button class="theme-option" data-theme-value="warm-minimal"><span class="theme-dot" style="background:#3D8B5E;"></span>Warm Minimal<span class="theme-check">&#10003;</span></button><button class="theme-option" data-theme-value="terracotta"><span class="theme-dot" style="background:#C67B5C;"></span>Terracotta<span class="theme-check">&#10003;</span></button><button class="theme-option" data-theme-value="ocean-dark"><span class="theme-dot" style="background:#EA580C;"></span>Ocean Dark<span class="theme-check">&#10003;</span></button><button class="theme-option" data-theme-value="ink"><span class="theme-dot" style="background:#2563EB;"></span>Ink<span class="theme-check">&#10003;</span></button></div></div><button id="logout-btn" class="nav-item logout">退出</button>
   </nav>
@@ -26,22 +27,6 @@
       <p>维护 FNS 同步目标、图片策略和账号安全。保存后立即生效。</p>
     </div>
 
-    <div class="card" style="padding:16px 20px;">
-      <h2 class="card-title" style="font-size:18px; margin-bottom:10px;">配置总览</h2>
-      <p class="card-desc" style="margin-bottom:12px;">统一管理同步、图片和 Telegram 触发能力。</p>
-      <div class="field" style="max-width:360px;">
-        <label for="deployment-mode">部署模式</label>
-        <select id="deployment-mode">
-          <option value="vps">VPS / 公网部署</option>
-          <option value="nas">NAS / 家庭服务器</option>
-          <option value="local">Local / 本地局域网</option>
-        </select>
-      </div>
-      <h3 class="card-title" style="font-size:15px; margin-bottom:0;">连接诊断</h3>
-      <p class="card-desc" style="margin-top:6px;">保存前可先检查 FNS 和 Telegram 的对外连接状态。</p>
-      <div id="fns-status-result"></div>
-    </div>
-
     <!-- Tab Navigation -->
     <div class="tab-nav" data-tab-group="settings">
       <button class="tab-btn active" data-tab="fns">FNS 同步</button>
@@ -50,6 +35,7 @@
       <button class="tab-btn" data-tab="feishu">飞书 Bot</button>
       <button class="tab-btn" data-tab="ai">AI 润色</button>
       <button class="tab-btn" data-tab="behavior">运行行为</button>
+      <button class="tab-btn" data-tab="backup">配置备份</button>
       <button class="tab-btn" data-tab="security">账号安全</button>
     </div>
 
@@ -511,6 +497,38 @@
       </div>
     </div>
 
+    <!-- Tab: Backup -->
+    <div class="tab-panel" data-tab-panel="settings" data-tab-id="backup">
+      <div class="card">
+        <h2 class="card-title">配置备份</h2>
+        <p class="card-desc">导出或导入设置页业务配置。默认导出会脱敏密钥；导入采用合并覆盖，不会替换账号或文章数据。</p>
+
+        <h3 class="card-title" style="font-size:15px; margin-top:4px;">导出配置</h3>
+        <label class="check-row" style="margin-top:8px;">
+          <input id="include-secrets-export" type="checkbox">
+          包含敏感密钥
+        </label>
+        <div class="field-hint" style="margin-top:6px;">包含密钥会导出 FNS Token、图床 Secret、Bot Token、飞书 Secret 和 LLM API Key。</div>
+        <div class="action-row">
+          <button id="export-settings" class="btn btn-secondary">导出 JSON</button>
+        </div>
+        <div id="settings-export-area"></div>
+
+        <div class="sep"></div>
+
+        <h3 class="card-title" style="font-size:15px;">导入配置</h3>
+        <div class="field">
+          <label for="settings-import-file">配置 JSON 文件</label>
+          <input id="settings-import-file" type="file" accept="application/json,.json">
+        </div>
+        <div class="action-row">
+          <button id="preview-settings-import" class="btn btn-secondary">预览导入</button>
+          <button id="confirm-settings-import" class="btn btn-primary" disabled>确认导入</button>
+        </div>
+        <div id="settings-import-area"></div>
+      </div>
+    </div>
+
     <!-- Tab: Security -->
     <div class="tab-panel" data-tab-panel="settings" data-tab-id="security">
       <div class="card">
@@ -551,6 +569,7 @@
     let aiSelectedModelId = "";
     let aiEditingProviderId = "";
     let persistedAiModelIds = new Set();
+    let pendingSettingsImportPackage = null;
 
     /* ── Helpers ── */
     function getImageMode() {
@@ -898,7 +917,7 @@
     Object.keys(validators).forEach((id) => {
       document.getElementById(id)?.addEventListener("input", validateAll);
     });
-    ["telegram-enabled", "feishu-enabled", "ai-enabled", "ai-enable-content-polish", "deployment-mode"].forEach((id) => {
+    ["telegram-enabled", "feishu-enabled", "ai-enabled", "ai-enable-content-polish"].forEach((id) => {
       document.getElementById(id)?.addEventListener("change", validateAll);
     });
 
@@ -1308,7 +1327,6 @@
       btn.textContent = "保存中…";
 
       const payload = {
-        deployment_mode: document.getElementById("deployment-mode").value,
         fns_base_url: document.getElementById("fns-base-url").value.trim(),
         fns_vault: document.getElementById("fns-vault").value.trim(),
         fns_target_dir: document.getElementById("fns-target-dir").value.trim(),
@@ -1435,6 +1453,137 @@
       finally { btn.disabled = false; btn.textContent = "保存并生效"; }
     });
 
+    /* ── Settings Backup ── */
+    function downloadJson(filename, payload) {
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    }
+
+    function backupSummaryItems(data) {
+      return [
+        { label: "配置组", value: (data.changed_groups || []).join(", ") || "-" },
+        { label: "接受字段", value: data.accepted_count ?? "-" },
+        { label: "忽略字段", value: (data.invalid_fields || []).join(", ") || "-" },
+        { label: "包含密钥", value: data.includes_secrets ? "是" : "否" },
+        { label: "脱敏字段", value: (data.redacted_fields || []).length },
+      ];
+    }
+
+    document.getElementById("export-settings").addEventListener("click", async () => {
+      const includeSecrets = document.getElementById("include-secrets-export").checked;
+      if (includeSecrets && !window.confirm("导出文件将包含敏感密钥。请确认只在可信设备和私密位置保存。")) {
+        return;
+      }
+      const btn = document.getElementById("export-settings");
+      btn.disabled = true;
+      try {
+        const res = await fetch("/api/admin/settings/export", {
+          method: "POST",
+          headers: AdminUI.buildJsonHeaders(),
+          body: JSON.stringify({ include_secrets: includeSecrets }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "导出失败");
+        const suffix = includeSecrets ? "with-secrets" : "redacted";
+        downloadJson(`wechat-md-settings-${suffix}.json`, data);
+        AdminUI.setHtml("settings-export-area", AdminUI.resultHtml({
+          title: "导出完成",
+          tone: "success",
+          items: [
+            { label: "包含密钥", value: data.include_secrets ? "是" : "否" },
+            { label: "脱敏字段", value: (data.redacted_fields || []).length },
+          ],
+        }));
+      } catch (error) {
+        AdminUI.setHtml("settings-export-area", AdminUI.resultHtml({ title: "导出失败", tone: "error", description: error.message }));
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    document.getElementById("settings-import-file").addEventListener("change", () => {
+      pendingSettingsImportPackage = null;
+      document.getElementById("confirm-settings-import").disabled = true;
+      AdminUI.setHtml("settings-import-area", "");
+    });
+
+    document.getElementById("preview-settings-import").addEventListener("click", async () => {
+      const file = document.getElementById("settings-import-file").files[0];
+      if (!file) {
+        AdminUI.toast("请选择配置 JSON 文件", "warn");
+        return;
+      }
+      try {
+        pendingSettingsImportPackage = JSON.parse(await file.text());
+      } catch (error) {
+        pendingSettingsImportPackage = null;
+        document.getElementById("confirm-settings-import").disabled = true;
+        AdminUI.setHtml("settings-import-area", AdminUI.resultHtml({ title: "文件无效", tone: "error", description: "请选择有效的 JSON 配置文件。" }));
+        return;
+      }
+      try {
+        const res = await fetch("/api/admin/settings/import/preview", {
+          method: "POST",
+          headers: AdminUI.buildJsonHeaders(),
+          body: JSON.stringify(pendingSettingsImportPackage),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "预览失败");
+        document.getElementById("confirm-settings-import").disabled = false;
+        AdminUI.setHtml("settings-import-area", AdminUI.resultHtml({
+          title: "导入预览",
+          tone: data.invalid_fields?.length ? "warn" : "info",
+          description: data.invalid_fields?.length ? "部分未知字段会被忽略。" : "配置包可导入。",
+          items: backupSummaryItems(data),
+          json: data,
+        }));
+      } catch (error) {
+        document.getElementById("confirm-settings-import").disabled = true;
+        AdminUI.setHtml("settings-import-area", AdminUI.resultHtml({ title: "预览失败", tone: "error", description: error.message }));
+      }
+    });
+
+    document.getElementById("confirm-settings-import").addEventListener("click", async () => {
+      if (!pendingSettingsImportPackage) {
+        AdminUI.toast("请先预览配置文件", "warn");
+        return;
+      }
+      if (!window.confirm("导入会合并覆盖设置页业务配置，未包含字段保持不变。确认导入？")) {
+        return;
+      }
+      const btn = document.getElementById("confirm-settings-import");
+      btn.disabled = true;
+      try {
+        const res = await fetch("/api/admin/settings/import", {
+          method: "POST",
+          headers: AdminUI.buildJsonHeaders(),
+          body: JSON.stringify(pendingSettingsImportPackage),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "导入失败");
+        AdminUI.toast("配置已导入", "success");
+        AdminUI.setHtml("settings-import-area", AdminUI.resultHtml({
+          title: "导入完成",
+          tone: "success",
+          items: backupSummaryItems(data.preview || {}),
+          json: data.preview,
+        }));
+        pendingSettingsImportPackage = null;
+        document.getElementById("settings-import-file").value = "";
+        await loadSettings();
+      } catch (error) {
+        AdminUI.setHtml("settings-import-area", AdminUI.resultHtml({ title: "导入失败", tone: "error", description: error.message }));
+        btn.disabled = false;
+      }
+    });
+
     /* ── Change Password ── */
     document.getElementById("change-pw-btn").addEventListener("click", async () => {
       const btn = document.getElementById("change-pw-btn");
@@ -1473,7 +1622,6 @@
       try {
         const res = await fetch("/api/admin/settings");
         const data = await res.json();
-        document.getElementById("deployment-mode").value = data.deployment_mode || "vps";
         document.getElementById("fns-base-url").value = data.fns_base_url || "";
         document.getElementById("fns-vault").value = data.fns_vault || "";
         document.getElementById("fns-target-dir").value = data.fns_target_dir || "";

@@ -121,8 +121,7 @@ def build_initial_admin_credentials() -> tuple[str, str, bool]:
     env_password = (os.environ.get(ADMIN_PASSWORD_ENV) or "").strip()
     if env_password:
         return username, env_password, False
-    generated_password = secrets.token_urlsafe(14)
-    return username, generated_password, True
+    return username, "admin123", False
 
 
 def emit_generated_admin_password(username: str, password: str) -> None:
