@@ -1945,9 +1945,11 @@ def configure_telegram_webhook(http_session=None) -> dict[str, Any]:
             timeout=max(settings.default_timeout, 15),
         )
         response.raise_for_status()
-        message = "Telegram Polling 模式已启用，Webhook 已删除" if settings.telegram_receive_mode == "polling" else "Telegram Webhook 已删除"
-        state = {"status": "inactive", "message": message, "webhook_url": ""}
-        update_telegram_webhook_state(state["status"], state["message"])
+        if settings.telegram_receive_mode == "polling":
+            state = {"status": "ready", "message": "Telegram Polling 模式已启用，Webhook 已删除", "webhook_url": ""}
+        else:
+            state = {"status": "inactive", "message": "Telegram Webhook 已删除", "webhook_url": ""}
+        update_telegram_webhook_state(state["status"], state["message"], webhook_url=state["webhook_url"])
         return state
 
     if not settings.telegram_enabled_and_configured or not settings.telegram_webhook_url:

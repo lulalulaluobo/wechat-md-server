@@ -66,6 +66,24 @@ class SettingsTests(unittest.TestCase):
         self.assertTrue(verify_password("admin123", password_hash))
         self.assertFalse(verify_password("admin", password_hash))
 
+    def test_default_ai_providers_include_deepseek(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runtime_path = Path(temp_dir) / "runtime-config.json"
+            env = {
+                "WECHAT_MD_RUNTIME_CONFIG_PATH": str(runtime_path),
+                "WECHAT_MD_APP_MASTER_KEY": "test-master-key",
+                "WECHAT_MD_ADMIN_PASSWORD": "admin",
+            }
+            with patch.dict(os.environ, env, clear=False):
+                settings = get_settings()
+
+        providers = {provider["id"]: provider for provider in settings.ai_providers}
+        self.assertIn("deepseek-default", providers)
+        self.assertEqual(providers["deepseek-default"]["display_name"], "DeepSeek")
+        self.assertEqual(providers["deepseek-default"]["type"], "openai_compatible")
+        self.assertEqual(providers["deepseek-default"]["base_url"], "https://api.deepseek.com")
+        self.assertTrue(providers["deepseek-default"]["built_in"])
+
     def test_save_runtime_config_persists_s3_image_settings(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             runtime_path = Path(temp_dir) / "runtime-config.json"

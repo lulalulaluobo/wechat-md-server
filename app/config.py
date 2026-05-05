@@ -131,6 +131,15 @@ BUILTIN_AI_PROVIDER_DEFINITIONS = (
         "base_url": "https://openrouter.ai/api/v1",
         "api_key": "",
     },
+    {
+        "id": "deepseek-default",
+        "type": "openai_compatible",
+        "display_name": "DeepSeek",
+        "built_in": True,
+        "enabled": True,
+        "base_url": "https://api.deepseek.com",
+        "api_key": "",
+    },
 )
 
 

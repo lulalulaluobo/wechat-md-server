@@ -1695,9 +1695,10 @@
         renderAiRegistry();
 
         if (data.telegram_enabled || data.telegram_webhook_status !== "inactive" || data.telegram_webhook_message) {
+          const telegramReady = ["success", "ready"].includes(data.telegram_webhook_status);
           AdminUI.setHtml("telegram-result-area", AdminUI.resultHtml({
-            title: "Webhook 状态",
-            tone: data.telegram_webhook_status === "success" ? "success" : data.telegram_webhook_status === "error" ? "error" : "info",
+            title: data.telegram_receive_mode === "polling" ? "接收状态" : "Webhook 状态",
+            tone: telegramReady ? "success" : data.telegram_webhook_status === "error" ? "error" : "info",
             description: data.telegram_webhook_message || "尚未注册 Webhook",
             items: [
               { label: "Webhook 地址", value: data.telegram_webhook_url || "-" },

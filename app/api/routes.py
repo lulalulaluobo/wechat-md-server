@@ -8,6 +8,7 @@ from typing import Any
 
 from fastapi import APIRouter, Cookie, File, Header, HTTPException, Request, Response, UploadFile, BackgroundTasks
 
+from app.bot_workers import start_bot_receivers
 from app.auth import (
     SESSION_COOKIE_NAME,
     build_session_token,
@@ -217,8 +218,10 @@ async def search_wechat(
     query = str(q or "").strip()
     if not query:
         raise HTTPException(status_code=400, detail="搜索关键词不能为空")
-    normalized_limit = 20 if int(limit or 10) == 20 else 10
+    normalized_limit = max(10, min(50, int(limit or 10)))
     normalized_provider = str(provider or "sogou_weixin").strip() or "sogou_weixin"
+    if normalized_provider != "sogou_weixin":
+        raise HTTPException(status_code=400, detail="provider 仅支持 sogou_weixin")
     store = get_sync_store()
     try:
         results = search_wechat_provider(query, provider=normalized_provider, limit=normalized_limit)
@@ -232,19 +235,20 @@ async def search_wechat(
         )
         raise HTTPException(status_code=400, detail=str(error)) from error
     annotated_results = store.annotate_search_results([dict(item) for item in results])
+    visible_results = [item for item in annotated_results if not item.get("already_ingested")]
     search_record = store.create_search_query(
         query=query,
         provider=normalized_provider,
         limit=normalized_limit,
-        result_count=len(annotated_results),
+        result_count=len(visible_results),
     )
-    store.save_search_results(str(search_record["id"]), annotated_results)
+    store.save_search_results(str(search_record["id"]), visible_results)
     return {
         "query": query,
         "provider": normalized_provider,
-        "total": len(annotated_results),
+        "total": len(visible_results),
         "cached": False,
-        "results": annotated_results,
+        "results": visible_results,
     }
 
 
@@ -547,6 +551,7 @@ async def import_admin_settings(
                 str(feishu_webhook_state.get("message") or ""),
                 webhook_url=str(feishu_webhook_state.get("webhook_url") or ""),
             )
+        start_bot_receivers()
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     except Exception as error:
@@ -648,6 +653,7 @@ async def update_admin_settings(
                 str(feishu_webhook_state.get("message") or ""),
                 webhook_url=str(feishu_webhook_state.get("webhook_url") or ""),
             )
+        start_bot_receivers()
     except Exception as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 

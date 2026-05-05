@@ -208,6 +208,28 @@ sudo ./install.sh uninstall  # 卸载（可选保留数据）
 - `body_polish`
 - `content_polished`
 
+#### AI 润色开关与提示词生效关系
+
+设置页里的三项 AI 能力不是三个同类开关，而是三层处理：
+
+| 开关 | 改什么 | 在哪里配置提示词 | 在哪里显示 |
+|------|--------|------------------|------------|
+| 启用 AI 摘要与 Frontmatter | 生成摘要、标签、理解说明和 Frontmatter 变量 | `解释器提示词` | `frontmatter 模板` 和 `body 模板` |
+| 启用正文补充块生成 | 生成额外补充说明，不改原文正文 | `解释器提示词` 里的 `body_polish` 要求 | `body 模板` 里的 `{{body_polish}}` |
+| 启用全文正文润色 | 对整篇正文重新排版和润色 | `正文润色提示词` | `body 模板` 里的 `{{content}}`，没有 `{{content}}` 时会追加到模板后面 |
+
+具体说明：
+
+- **启用 AI 摘要与 Frontmatter** 是 AI 总开关。开启后，系统会把文章正文发送给当前模型，并按 `解释器提示词` 生成 `summary`、`tags`、`my_understand` 等变量，再填入 `frontmatter 模板` 和 `body 模板`。
+- **启用正文补充块生成** 依赖上面的解释器调用。它只控制 `body_polish` 是否保留；如果 `body 模板` 里没有 `{{body_polish}}`，即使 AI 生成了补充内容，最终 Markdown 里也不会显示。
+- **启用全文正文润色** 会额外发起一次 AI 调用，使用 `正文润色提示词` 对原始正文做整体整理。它适合优化标题层级、空行、列表、表格和段落结构；如果关闭，原文正文不会被整体改写。
+
+最常见组合：
+
+- 只想要摘要、标签和 Frontmatter：只开启 **AI 摘要与 Frontmatter**。
+- 想在笔记开头增加 AI 理解或点评：开启 **AI 摘要与 Frontmatter** 和 **正文补充块生成**，并确认 `body 模板` 包含 `{{body_polish}}`。
+- 想让整篇正文也变得更适合 Obsidian 阅读：同时开启 **全文正文润色**，并在 `正文润色提示词` 中写清楚整理规则。
+
 当前支持的 Provider 类型包括：
 
 - OpenAI Compatible
@@ -215,6 +237,7 @@ sudo ./install.sh uninstall  # 卸载（可选保留数据）
 - Gemini
 - Ollama
 - OpenRouter
+- DeepSeek
 
 ![AI 润色配置](docs/images/1775994440564.png)
 

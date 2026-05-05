@@ -34,21 +34,15 @@
           <input id="search-query" placeholder="例如：AI 编程工作流">
         </div>
         <div class="field">
-          <label for="search-provider">Provider</label>
-          <select id="search-provider">
-            <option value="sogou_weixin">搜狗微信</option>
-            <option value="local_cache">本地缓存（暂未支持）</option>
-            <option value="web_search">Web Search（暂未支持）</option>
-          </select>
+          <label>Provider</label>
+          <div class="text-muted" style="padding:12px 0;">搜狗微信</div>
         </div>
       </div>
       <div class="field-row">
         <div class="field">
           <label for="search-limit">返回数量</label>
-          <select id="search-limit">
-            <option value="10">10</option>
-            <option value="20">20</option>
-          </select>
+          <input id="search-limit" type="number" min="10" max="50" step="1" value="20">
+          <div class="text-muted" style="font-size:12px; margin-top:6px;">10 到 50 条，仅显示未入库文章。</div>
         </div>
         <div class="field">
           <label>&nbsp;</label>
@@ -152,8 +146,9 @@
 
     document.getElementById("search-submit").addEventListener("click", async () => {
       const query = document.getElementById("search-query").value.trim();
-      const limit = document.getElementById("search-limit").value;
-      const provider = document.getElementById("search-provider").value;
+      const rawLimit = Number(document.getElementById("search-limit").value || 20);
+      const limit = Math.max(10, Math.min(50, Number.isFinite(rawLimit) ? rawLimit : 20));
+      const provider = "sogou_weixin";
       if (!query) {
         AdminUI.toast("请输入搜索关键词", "warn");
         return;

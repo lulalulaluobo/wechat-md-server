@@ -18,6 +18,7 @@ from app.main import app  # noqa: E402
 from app.auth import build_session_token, reset_login_rate_limit_state  # noqa: E402
 from app.config import get_settings, reset_admin_credentials  # noqa: E402
 from app.services import (  # noqa: E402
+    configure_telegram_webhook,
     extract_single_wechat_url,
     parse_links,
     process_feishu_long_connection_event,
@@ -120,6 +121,12 @@ class ApiTests(unittest.TestCase):
         self.assertIn("主题搜索", response.text)
         self.assertIn("搜索关键词", response.text)
         self.assertIn("批量入库", response.text)
+        self.assertIn('id="search-limit"', response.text)
+        self.assertIn('min="10"', response.text)
+        self.assertIn('max="50"', response.text)
+        self.assertNotIn('id="search-provider"', response.text)
+        self.assertNotIn("local_cache", response.text)
+        self.assertNotIn("web_search", response.text)
 
     def test_wrong_password_is_rejected(self):
         response = self._login(password="wrong-password")
@@ -499,7 +506,7 @@ class ApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 400)
 
-    def test_search_wechat_normalizes_limit_and_persists_history(self):
+    def test_search_wechat_clamps_limit_and_persists_history(self):
         self._login()
         fake_results = [
             {
@@ -522,18 +529,69 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(payload["total"], 1)
         self.assertFalse(payload["cached"])
         self.assertFalse(payload["results"][0]["already_ingested"])
-        self.assertEqual(mocked_search.call_args.kwargs["limit"], 10)
+        self.assertEqual(mocked_search.call_args.kwargs["limit"], 13)
 
         history = self.client.get("/api/search/history")
         self.assertEqual(history.status_code, 200)
         self.assertEqual(history.json()["items"][0]["query"], "AI")
+
+        with patch("app.api.routes.search_wechat_provider", return_value=[]) as mocked_search:
+            response = self.client.get("/api/search/wechat?q=AI&limit=99&provider=sogou_weixin")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(mocked_search.call_args.kwargs["limit"], 50)
+
+    def test_search_wechat_only_returns_uningested_results(self):
+        self._login()
+        from app.services import get_sync_store
+
+        get_sync_store().upsert_article(
+            {
+                "article_url": "https://mp.weixin.qq.com/s/search-ingested-result",
+                "source_type": "wechat",
+                "is_ingested": True,
+                "fetch_status": "success",
+                "process_status": "success",
+            }
+        )
+        fake_results = [
+            {
+                "title": "已入库文章",
+                "url": "https://mp.weixin.qq.com/s/search-ingested-result",
+                "source_name": "某公众号",
+                "published_at": "2026-05-01",
+                "snippet": "摘要",
+                "provider": "sogou_weixin",
+                "score": None,
+            },
+            {
+                "title": "未入库文章",
+                "url": "https://mp.weixin.qq.com/s/search-new-result",
+                "source_name": "某公众号",
+                "published_at": "2026-05-02",
+                "snippet": "摘要",
+                "provider": "sogou_weixin",
+                "score": None,
+            },
+        ]
+        with patch("app.api.routes.search_wechat_provider", return_value=fake_results):
+            response = self.client.get("/api/search/wechat?q=AI&limit=10&provider=sogou_weixin")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["total"], 1)
+        self.assertEqual(payload["results"][0]["url"], "https://mp.weixin.qq.com/s/search-new-result")
+        self.assertFalse(payload["results"][0]["already_ingested"])
+
+        history = self.client.get("/api/search/history")
+        self.assertEqual(history.json()["items"][0]["result_count"], 1)
 
     def test_search_wechat_unsupported_provider_returns_clear_error(self):
         self._login()
         response = self.client.get("/api/search/wechat?q=AI&provider=local_cache")
 
         self.assertEqual(response.status_code, 400)
-        self.assertIn("暂未支持", response.json()["detail"])
+        self.assertIn("仅支持 sogou_weixin", response.json()["detail"])
 
     def test_search_ingest_reuses_batch_job_and_skips_ingested(self):
         login = self._login()
@@ -886,6 +944,18 @@ class ApiTests(unittest.TestCase):
         self.assertNotIn('data-model-selected="true"', text)
         self.assertIn('document.getElementById("ai-provider-list").addEventListener("click"', text)
 
+    def test_admin_settings_includes_deepseek_builtin_provider(self):
+        self._login()
+        response = self.client.get("/api/admin/settings")
+
+        self.assertEqual(response.status_code, 200)
+        providers = {provider["id"]: provider for provider in response.json()["ai_providers"]}
+        self.assertIn("deepseek-default", providers)
+        self.assertEqual(providers["deepseek-default"]["display_name"], "DeepSeek")
+        self.assertEqual(providers["deepseek-default"]["type"], "openai_compatible")
+        self.assertEqual(providers["deepseek-default"]["base_url"], "https://api.deepseek.com")
+        self.assertTrue(providers["deepseek-default"]["built_in"])
+
     def test_admin_settings_masks_telegram_secret_values(self):
         self._login()
         with patch("app.api.routes.configure_telegram_webhook", return_value={"status": "success", "message": "ok", "webhook_url": "https://app.example.com/api/integrations/telegram/webhook"}):
@@ -988,6 +1058,54 @@ class ApiTests(unittest.TestCase):
         data = response.json()["settings"]
         self.assertEqual(data["telegram_webhook_status"], "success")
         self.assertEqual(data["telegram_webhook_message"], "registered")
+
+    def test_telegram_polling_mode_reports_ready_after_webhook_delete(self):
+        self._login()
+        with patch("app.api.routes.configure_telegram_webhook", return_value={"status": "ready", "message": "polling ready", "webhook_url": ""}):
+            response = self.client.put(
+                "/api/admin/settings",
+                json={
+                    "telegram_enabled": True,
+                    "telegram_bot_token": "telegram-token-polling",
+                    "telegram_receive_mode": "polling",
+                    "telegram_poll_interval": 5,
+                    "telegram_allowed_chat_ids": "10001",
+                },
+            )
+        self.assertEqual(response.status_code, 200)
+
+        mock_response = SimpleNamespace(raise_for_status=lambda: None)
+        mock_session = SimpleNamespace(post=lambda *args, **kwargs: mock_response)
+        state = configure_telegram_webhook(http_session=mock_session)
+
+        self.assertEqual(state["status"], "ready")
+        self.assertEqual(state["webhook_url"], "")
+        self.assertIn("Polling 模式已启用", state["message"])
+        data = self.client.get("/api/admin/settings").json()
+        self.assertEqual(data["telegram_webhook_status"], "ready")
+        self.assertEqual(data["telegram_receive_mode"], "polling")
+
+    def test_admin_settings_put_starts_bot_receivers_after_polling_config_change(self):
+        self._login()
+        with patch("app.api.routes.configure_telegram_webhook", return_value={"status": "ready", "message": "polling ready", "webhook_url": ""}):
+            with patch("app.api.routes.configure_feishu_webhook_state", return_value={"status": "inactive", "message": "", "webhook_url": ""}):
+                with patch("app.api.routes.start_bot_receivers") as mocked_start:
+                    response = self.client.put(
+                        "/api/admin/settings",
+                        json={
+                            "telegram_enabled": True,
+                            "telegram_bot_token": "telegram-token-polling",
+                            "telegram_receive_mode": "polling",
+                            "telegram_poll_interval": 5,
+                            "telegram_allowed_chat_ids": "10001",
+                        },
+                    )
+
+        self.assertEqual(response.status_code, 200)
+        mocked_start.assert_called_once()
+        data = response.json()["settings"]
+        self.assertEqual(data["telegram_webhook_status"], "ready")
+        self.assertEqual(data["telegram_receive_mode"], "polling")
 
     def test_telegram_webhook_rejects_invalid_secret(self):
         self._login()
