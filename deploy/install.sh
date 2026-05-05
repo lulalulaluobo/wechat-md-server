@@ -3,15 +3,16 @@
 set -Eeuo pipefail
 
 SCRIPT_NAME="wechat-md-ob.sh"
-SCRIPT_VERSION="1.0.0"
+SCRIPT_VERSION="1.1.0"
 APP_NAME="wechat-md-server"
 INSTALL_DIR="/opt/wechat-md-server"
 COMPOSE_FILE="${INSTALL_DIR}/docker-compose.yml"
 DATA_DIR="${INSTALL_DIR}/data"
 CONTAINER_NAME="wechat-md-server"
-IMAGE_NAME="lulalulaluobo/wechat-md-server:1.0.0"
+IMAGE_NAME="lulalulaluobo/wechat-md-server:1.1.0"
 APP_PORT="8765"
 DEFAULT_ADMIN_USERNAME="admin"
+DEFAULT_ADMIN_PASSWORD="admin123"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -249,7 +250,8 @@ show_deploy_summary() {
   echo "管理员账号: ${DEFAULT_ADMIN_USERNAME}"
   echo "管理员密码: ${admin_password}"
   echo
-  msg_warn "请妥善保存管理员密码与主密钥；如需正式暴露公网，建议再配反向代理与 HTTPS。"
+  msg_warn "请登录后尽快在设置页修改默认密码。"
+  msg_warn "如需正式暴露公网，建议再配反向代理与 HTTPS。"
 }
 
 install_app() {
@@ -268,7 +270,7 @@ install_app() {
   local master_key
   local admin_password
   master_key="$(generate_secret)"
-  admin_password="$(generate_secret)"
+  admin_password="${DEFAULT_ADMIN_PASSWORD}"
 
   msg_info "写入 docker-compose.yml..."
   write_compose_file "${master_key}" "${admin_password}"
@@ -313,8 +315,8 @@ update_app() {
     msg_warn "未找到现有主密钥，已重新生成并写入 compose。"
   fi
   if [[ -z "${admin_password}" ]]; then
-    admin_password="$(generate_secret)"
-    msg_warn "未找到现有管理员密码，已重新生成并写入 compose。"
+    admin_password="${DEFAULT_ADMIN_PASSWORD}"
+    msg_warn "未找到现有管理员密码，已使用默认密码。"
   fi
 
   msg_info "重写 docker-compose.yml 并保留已有数据..."
@@ -416,7 +418,7 @@ ${SCRIPT_NAME} v${SCRIPT_VERSION}
   ${SCRIPT_NAME} help
 
 说明:
-  - 首次安装会自动生成主密钥和管理员密码
+  - 首次安装使用默认账号 admin / admin123，请登录后尽快修改
   - 更新会保留 data 目录和已有凭据
   - 当前脚本仅支持 Debian/Ubuntu
   - Docker / Docker Compose 缺失时会先确认再安装
