@@ -69,6 +69,7 @@ def _telegram_api_url(token: str, method: str) -> str:
 
 def _telegram_polling_loop() -> None:
     offset: int | None = None
+    webhook_deleted_for_token: str | None = None
     session = requests.Session()
     while not _telegram_stop.is_set():
         settings = get_settings()
@@ -76,11 +77,13 @@ def _telegram_polling_loop() -> None:
             _telegram_stop.wait(5)
             continue
         try:
-            session.post(
-                _telegram_api_url(settings.telegram_bot_token, "deleteWebhook"),
-                json={"drop_pending_updates": False},
-                timeout=max(settings.default_timeout, 15),
-            ).raise_for_status()
+            if webhook_deleted_for_token != settings.telegram_bot_token:
+                session.post(
+                    _telegram_api_url(settings.telegram_bot_token, "deleteWebhook"),
+                    json={"drop_pending_updates": False},
+                    timeout=max(settings.default_timeout, 15),
+                ).raise_for_status()
+                webhook_deleted_for_token = settings.telegram_bot_token
             payload: dict[str, Any] = {
                 "timeout": max(int(settings.telegram_poll_interval), 1),
                 "allowed_updates": ["message"],
