@@ -52,6 +52,12 @@
           </label>
         </div>
       </div>
+      <div class="field-row">
+        <div class="field">
+          <label>入库目标目录</label>
+          <div id="search-target-dir" class="text-muted" style="padding:12px 0;">加载中...</div>
+        </div>
+      </div>
       <div class="action-row">
         <button id="search-submit" class="btn btn-primary">搜索</button>
         <button id="select-uningested" class="btn btn-secondary">选择未入库</button>
@@ -89,6 +95,7 @@
   <script src="/assets/admin.js?v=20260331f"></script>
   <script>
     let currentResults = [];
+    let searchTargetDir = "";
 
     function resultBadge(item) {
       return item.already_ingested
@@ -214,6 +221,7 @@
             { label: "接受", value: data.accepted },
             { label: "跳过", value: data.skipped },
             { label: "输出", value: data.output_target },
+            { label: "目标目录", value: searchTargetDir || "-" },
           ],
         }));
       } catch (error) {
@@ -232,9 +240,26 @@
       if (res.ok) loadHistory();
     });
 
-    document.addEventListener("DOMContentLoaded", () => {
+    document.addEventListener("DOMContentLoaded", async () => {
       renderResults();
       loadHistory();
+      try {
+        const res = await fetch("/api/config");
+        if (res.ok) {
+          const config = await res.json();
+          const targetDir = config.search_fns_target_dir || "00_Inbox/主题搜索";
+          searchTargetDir = targetDir;
+          const outputTarget = config.default_output_target || "local";
+          const label = outputTarget === "fns"
+            ? `FNS → ${targetDir}`
+            : config.default_output_dir || "本地输出目录";
+          document.getElementById("search-target-dir").textContent = label;
+        } else {
+          document.getElementById("search-target-dir").textContent = "未知（配置加载失败）";
+        }
+      } catch {
+        document.getElementById("search-target-dir").textContent = "未知";
+      }
     });
   </script>
 </body>

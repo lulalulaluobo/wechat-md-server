@@ -888,7 +888,7 @@ def _run_single_conversion(
             if require_ai_success and not bool(ai_polish.get("template_applied")):
                 message = str(ai_polish.get("message") or "模板未成功应用")
                 raise RuntimeError(f"AI 润色失败：{message}")
-        sync = sync_result_to_output(result, output_target=normalized_target)
+        sync = sync_result_to_output(result, output_target=normalized_target, trigger_channel=trigger_channel)
         ingested_at = _utc_now() if normalized_target == "fns" else ""
         markdown_path = Path(str(result.get("markdown_file") or ""))
         content_hash = (
@@ -1013,6 +1013,13 @@ def _resolve_image_mode_override(trigger_channel: str, settings) -> str | None:
     if trigger_channel == "feishu":
         return settings.feishu_image_mode or None
     return None
+
+
+def _resolve_fns_target_dir(trigger_channel: str, settings) -> str:
+    """Return the FNS target directory for the given trigger channel."""
+    if trigger_channel == "search":
+        return settings.search_fns_target_dir.strip("/\\")
+    return settings.fns_target_dir.strip("/\\")
 
 
 def ensure_runtime_environment(image_mode_override: str | None = None) -> None:
@@ -1678,6 +1685,7 @@ def build_config_payload() -> dict[str, Any]:
         "fns_base_url": settings.fns_base_url,
         "fns_vault": settings.fns_vault,
         "fns_target_dir": settings.fns_target_dir,
+        "search_fns_target_dir": settings.search_fns_target_dir,
         "current_user": {"username": settings.username},
         "cleanup_temp_on_success": settings.cleanup_temp_on_success,
         "image_mode": settings.image_mode,
@@ -1869,17 +1877,20 @@ def build_output_target(output_target: str | None, settings=None) -> str:
     return "fns" if settings.fns_enabled else "local"
 
 
-def sync_result_to_output(result: dict[str, Any], output_target: str) -> dict[str, Any]:
+def sync_result_to_output(result: dict[str, Any], output_target: str, *, trigger_channel: str = "") -> dict[str, Any]:
     if output_target == "local":
         return {
             "status": "success",
             "target": "local",
             "markdown_file": result["markdown_file"],
         }
+    settings = get_settings()
+    fns_target = _resolve_fns_target_dir(trigger_channel, settings) if trigger_channel else None
     return sync_markdown_to_fns(
         markdown_path=Path(str(result["markdown_file"])),
         note_title=str(result["title"]),
         folder_name=str(result.get("folder_name") or ""),
+        target_dir=fns_target,
     )
 
 
@@ -1888,14 +1899,15 @@ def sync_markdown_to_fns(
     note_title: str,
     folder_name: str,
     http_session=None,
+    target_dir: str | None = None,
 ) -> dict[str, Any]:
     settings = get_settings()
     if not settings.fns_enabled:
         raise RuntimeError("Fast Note Sync 未完成配置")
 
     file_name = f"{sanitize_filename(note_title)}.md"
-    target_dir = settings.fns_target_dir.strip("/\\")
-    note_path = "/".join(part for part in (target_dir, file_name) if part)
+    effective_target_dir = (target_dir or settings.fns_target_dir).strip("/\\")
+    note_path = "/".join(part for part in (effective_target_dir, file_name) if part)
     content = markdown_path.read_text(encoding="utf-8")
     stat = markdown_path.stat()
     payload = {

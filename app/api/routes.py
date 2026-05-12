@@ -317,12 +317,14 @@ async def ingest_search_results(
         task_items=task_items,
         trigger_channel="search",
     )
+    settings = get_settings()
     return {
         "status": "queued",
         "job_id": job["job_id"],
         "accepted": len(accepted_urls),
         "skipped": skipped,
         "output_target": output_target,
+        "search_fns_target_dir": settings.search_fns_target_dir,
     }
 
 

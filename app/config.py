@@ -19,6 +19,7 @@ from app.auth import (
 
 
 DEFAULT_FNS_TARGET_DIR = "00_Inbox/微信公众号"
+DEFAULT_SEARCH_FNS_TARGET_DIR = "00_Inbox/主题搜索"
 DEFAULT_IMAGE_MODE = "wechat_hotlink"
 DEFAULT_SINGLE_CONVERSION_HARD_TIMEOUT_SECONDS = 180
 IMAGE_MODE_VALUES = {"wechat_hotlink", "s3_hotlink"}
@@ -156,6 +157,7 @@ class Settings:
     fns_token: str | None = None
     fns_vault: str | None = None
     fns_target_dir: str = DEFAULT_FNS_TARGET_DIR
+    search_fns_target_dir: str = DEFAULT_SEARCH_FNS_TARGET_DIR
     cleanup_temp_on_success: bool = True
     single_conversion_isolation_enabled: bool = True
     single_conversion_hard_timeout_seconds: int = DEFAULT_SINGLE_CONVERSION_HARD_TIMEOUT_SECONDS
@@ -288,6 +290,7 @@ FNS_FIELDS = {
     "fns_token",
     "fns_vault",
     "fns_target_dir",
+    "search_fns_target_dir",
     "cleanup_temp_on_success",
 }
 IMAGE_STORAGE_TEXT_FIELDS = {
@@ -724,6 +727,7 @@ def _build_settings_export_payload(settings: Settings) -> dict[str, Any]:
         "fns_token": settings.fns_token or "",
         "fns_vault": settings.fns_vault or "",
         "fns_target_dir": settings.fns_target_dir or DEFAULT_FNS_TARGET_DIR,
+        "search_fns_target_dir": settings.search_fns_target_dir or DEFAULT_SEARCH_FNS_TARGET_DIR,
         "cleanup_temp_on_success": settings.cleanup_temp_on_success,
         "single_conversion_isolation_enabled": settings.single_conversion_isolation_enabled,
         "single_conversion_hard_timeout_seconds": settings.single_conversion_hard_timeout_seconds,
@@ -949,6 +953,7 @@ def build_admin_settings_payload() -> dict[str, Any]:
         "fns_base_url": settings.fns_base_url or "",
         "fns_vault": settings.fns_vault or "",
         "fns_target_dir": settings.fns_target_dir or DEFAULT_FNS_TARGET_DIR,
+        "search_fns_target_dir": settings.search_fns_target_dir or DEFAULT_SEARCH_FNS_TARGET_DIR,
         "fns_token_configured": bool(settings.fns_token),
         "fns_token_masked": _mask_secret(settings.fns_token),
         "cleanup_temp_on_success": settings.cleanup_temp_on_success,
@@ -1050,6 +1055,14 @@ def get_settings() -> Settings:
             or DEFAULT_FNS_TARGET_DIR
         ).strip()
         or DEFAULT_FNS_TARGET_DIR
+    )
+    search_fns_target_dir = (
+        str(
+            runtime_user_settings.get("search_fns_target_dir")
+            or os.environ.get("WECHAT_MD_SEARCH_FNS_TARGET_DIR")
+            or DEFAULT_SEARCH_FNS_TARGET_DIR
+        ).strip()
+        or DEFAULT_SEARCH_FNS_TARGET_DIR
     )
     cleanup_temp_on_success = _as_bool(runtime_user_settings.get("cleanup_temp_on_success"), default=True)
     single_conversion_isolation_enabled = _as_bool(
@@ -1155,6 +1168,7 @@ def get_settings() -> Settings:
         fns_token=fns_token,
         fns_vault=fns_vault,
         fns_target_dir=fns_target_dir.strip("/\\"),
+        search_fns_target_dir=search_fns_target_dir.strip("/\\"),
         cleanup_temp_on_success=cleanup_temp_on_success,
         single_conversion_isolation_enabled=single_conversion_isolation_enabled,
         single_conversion_hard_timeout_seconds=single_conversion_hard_timeout_seconds,
@@ -1266,6 +1280,7 @@ def _normalize_user_settings(raw_settings: Any) -> dict[str, Any]:
         ),
         "fns_vault": str(source.get("fns_vault") or "").strip(),
         "fns_target_dir": str(source.get("fns_target_dir") or DEFAULT_FNS_TARGET_DIR).strip() or DEFAULT_FNS_TARGET_DIR,
+        "search_fns_target_dir": str(source.get("search_fns_target_dir") or DEFAULT_SEARCH_FNS_TARGET_DIR).strip() or DEFAULT_SEARCH_FNS_TARGET_DIR,
         "cleanup_temp_on_success": _as_bool(source.get("cleanup_temp_on_success"), default=True),
         "single_conversion_isolation_enabled": _as_bool(source.get("single_conversion_isolation_enabled"), default=True),
         "single_conversion_hard_timeout_seconds": _as_int(
@@ -1393,6 +1408,7 @@ def _serialize_runtime_config(data: dict[str, Any]) -> dict[str, Any]:
             "fns_token_encrypted": encrypt_secret(str(user_settings.get("fns_token") or "")),
             "fns_vault": str(user_settings.get("fns_vault") or "").strip(),
             "fns_target_dir": str(user_settings.get("fns_target_dir") or DEFAULT_FNS_TARGET_DIR).strip() or DEFAULT_FNS_TARGET_DIR,
+            "search_fns_target_dir": str(user_settings.get("search_fns_target_dir") or DEFAULT_SEARCH_FNS_TARGET_DIR).strip() or DEFAULT_SEARCH_FNS_TARGET_DIR,
             "cleanup_temp_on_success": _as_bool(user_settings.get("cleanup_temp_on_success"), default=True),
             "single_conversion_isolation_enabled": _as_bool(
                 user_settings.get("single_conversion_isolation_enabled"),
