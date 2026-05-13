@@ -3,13 +3,13 @@
 set -Eeuo pipefail
 
 SCRIPT_NAME="wechat-md-ob.sh"
-SCRIPT_VERSION="1.1.0"
+SCRIPT_VERSION="1.1.3"
 APP_NAME="wechat-md-server"
 INSTALL_DIR="/opt/wechat-md-server"
 COMPOSE_FILE="${INSTALL_DIR}/docker-compose.yml"
 DATA_DIR="${INSTALL_DIR}/data"
 CONTAINER_NAME="wechat-md-server"
-IMAGE_NAME="lulalulaluobo/wechat-md-server:1.1.0"
+IMAGE_NAME="lulalulaluobo/wechat-md-server:1.1.3"
 APP_PORT="8765"
 DEFAULT_ADMIN_USERNAME="admin"
 DEFAULT_ADMIN_PASSWORD="admin123"
